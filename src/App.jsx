@@ -1,8 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "firebase/auth";
 import { getFirestore, collection, query, orderBy, onSnapshot, addDoc, deleteDoc, doc, setDoc, getDoc } from "firebase/firestore";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import ExercisePicker from './components/ExercisePicker';
+import {
+  convertTemplateToActiveWorkout,
+  createDefaultTemplateSet,
+  normalizeTemplateExercise,
+  validateTemplate,
+} from './utils/templates';
+import { getBestSetForExercise, getExerciseHistory } from './utils/exercises';
 
 // 1. YOUR FIREBASE CONFIGURATION
 const firebaseConfig = {
@@ -19,6 +27,28 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+const THEME = {
+  primaryRed: '#DA291C',
+  primaryRedHover: '#B71C12',
+  bgBlack: '#0B0B0B',
+  bgDark: '#151515',
+  cardBg: '#1C1C1C',
+  border: '#2A2A2A',
+  textPrimary: '#F5F5F5',
+  textSecondary: '#A1A1AA',
+  accentGold: '#F2C94C',
+  successGreen: '#34C759',
+  dangerRed: '#FF453A',
+  redSoft: 'rgba(218, 41, 28, 0.14)',
+  redMedium: 'rgba(218, 41, 28, 0.24)',
+  goldSoft: 'rgba(242, 201, 76, 0.14)',
+  successSoft: 'rgba(52, 199, 89, 0.14)',
+  dangerSoft: 'rgba(255, 69, 58, 0.12)',
+  overlay: 'rgba(0, 0, 0, 0.76)',
+  shadow: '0 18px 40px rgba(0, 0, 0, 0.34)',
+  macroCarbs: '#D6AE35',
+};
+
 // 2. EXERCISE DATABASE
 const EXERCISE_DATABASE = {
   "Chest": ["Bench Press", "Incline Dumbbell Press", "Cable Crossovers", "Dips", "Low Incline Dumbbell Press", "Flat Dumbbell Fly", "Deficit Push-up"],
@@ -27,6 +57,33 @@ const EXERCISE_DATABASE = {
   "Legs": ["Barbell Squat", "High Bar Squat", "Front Squat", "Goblet Squat", "Hack Squat", "Leg Press", "Reverse Nordic", "Sissy Squat", "Leg Extensions", "Bulgarian Split Squat", "Front Foot Elevated Smith Lunge", "Seated Machine Adductor", "Romanian Deadlift (RDL)", "Stiff Legged Deadlift", "Single-Leg RDL", "Good Mornings", "Seated/Lying Leg Curl", "Glute-Ham Raise (GHR)", "Nordic Hamstring Curl", "Glute Thrust Machine", "Barbell Hip Thrust", "Sit Back Squat", "Deficit Reverse Lunge", "Cable Glute Kickbacks", "Weighted Step-Ups", "Seated Machine Abductor", "Calf Raises", "Standing Calf Raise", "Seated Calf Raise", "Tibialis Raise"],
   "Arms": ["Bicep Curls", "Triceps Pushdown", "Skull Crushers", "Hammer Curls", "Overhead Extension", "Dip Machine", "Decline Dumbbell Curl", "Incline Dumbbell Curl", "Superman Cable Curl"],
   "Core": ["Hanging Leg Raises", "Cable Crunches", "Plank"]
+};
+
+const MUSCLE_GROUP_OPTIONS = ['Chest', 'Back', 'Shoulders', 'Legs', 'Arms', 'Core', 'Other'];
+
+const createDefaultExerciseId = (muscleGroup, exerciseName) => {
+  const slug = `${muscleGroup}-${exerciseName}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  return `default-${slug}`;
+};
+
+const getUniformSetValue = (sets = [], field) => {
+  if (sets.length === 0) return '';
+
+  const firstValue = String(sets[0]?.[field] ?? '');
+  const allMatch = sets.every(set => String(set?.[field] ?? '') === firstValue);
+  return allMatch ? firstValue : '';
+};
+
+const formatHistoryMetric = (value) => {
+  if (value === undefined || value === null || value === '') return '—';
+
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value).trim() || '—';
+  return Number.isInteger(number) ? String(number) : String(Number(number.toFixed(2)));
 };
 
 // 4. SEASONING DATABASE 
@@ -53,6 +110,7 @@ export default function App() {
   const [foodSearch, setFoodSearch] = useState('');
   const [foodResults, setFoodResults] = useState([]);
   const [isSearchingFood, setIsSearchingFood] = useState(false);
+  const [exerciseSearchQuery, setExerciseSearchQuery] = useState('');
   // --- TAB PERSISTENCE STATE ---
   const [activeTab, setActiveTab] = useState(() => {
     return localStorage.getItem('eliteTrackerTab') || 'workout';
@@ -64,6 +122,9 @@ export default function App() {
   // --- FAVORITE EXERCISES STATE ---
   // --- FAVORITE EXERCISES STATE (FIREBASE SYNCED) ---
   const [favoriteExercises, setFavoriteExercises] = useState([]);
+  const [customExercises, setCustomExercises] = useState([]);
+  const [workoutTemplates, setWorkoutTemplates] = useState([]);
+  const [templatesError, setTemplatesError] = useState('');
 
   // Lắng nghe dữ liệu favorites từ Firebase Firestore
   useEffect(() => {
@@ -79,12 +140,48 @@ export default function App() {
       return () => unsubscribe();
     }
   }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      const customExercisesRef = collection(db, "users", user.uid, "custom_exercises");
+      const unsubscribe = onSnapshot(customExercisesRef, (snapshot) => {
+        const exercisesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setCustomExercises(exercisesData);
+      });
+      return () => unsubscribe();
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      const templatesQuery = query(collection(db, "users", user.uid, "workout_templates"), orderBy("updatedAt", "desc"));
+      const unsubscribe = onSnapshot(templatesQuery, (snapshot) => {
+        const templatesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setWorkoutTemplates(templatesData);
+        setTemplatesError('');
+      }, () => {
+        setTemplatesError('Templates could not be loaded right now.');
+      });
+      return () => unsubscribe();
+    }
+  }, [user]);
   const [workoutHistory, setWorkoutHistory] = useState([]);
+  const [selectedExerciseHistoryName, setSelectedExerciseHistoryName] = useState('');
   const [selectedDate, setSelectedDate] = useState(null); 
   const [weekOffset, setWeekOffset] = useState(0);
   const [activeWorkout, setActiveWorkout] = useState({});
   const [isWorkoutActive, setIsWorkoutActive] = useState(false);
   const [showExerciseModal, setShowExerciseModal] = useState(false);
+  const [showCreateExerciseModal, setShowCreateExerciseModal] = useState(false);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [editingTemplateId, setEditingTemplateId] = useState(null);
+  const [templateName, setTemplateName] = useState('');
+  const [templateNotes, setTemplateNotes] = useState('');
+  const [templateExercises, setTemplateExercises] = useState([]);
+  const [templateExerciseSearch, setTemplateExerciseSearch] = useState('');
+  const [templateFormError, setTemplateFormError] = useState('');
+  const [currentTemplateId, setCurrentTemplateId] = useState(null);
+  const [currentTemplateName, setCurrentTemplateName] = useState('');
   const [seconds, setSeconds] = useState(0);
   
   // COACHING MODULE STATES
@@ -100,15 +197,99 @@ export default function App() {
   const [dailyWeight, setDailyWeight] = useState('');
   const [dailyLogs, setDailyLogs] = useState([]);
   const [dynamicTDEE, setDynamicTDEE] = useState(null);
+
+  const calculateDynamicTDEE = (logs, windowSize = 14) => {
+    const windowLogs = logs.slice(0, windowSize);
+    const N = windowLogs.length;
+    
+    if (N < 7) return; 
+
+    const totalCalories = windowLogs.reduce((sum, log) => sum + log.calories, 0);
+    const newestWeight = windowLogs[0].weight;
+    const oldestWeight = windowLogs[N - 1].weight;
+    const deltaW = newestWeight - oldestWeight; 
+
+    const calculatedTDEE = (totalCalories - (deltaW * 7700)) / N;
+    setDynamicTDEE(Math.round(calculatedTDEE));
+  };
   
   // NUTRITION MODAL STATES 
   const [selectedFood, setSelectedFood] = useState(null);
   const [foodWeight, setFoodWeight] = useState(100);
   const [cookingMethod, setCookingMethod] = useState('raw_boiled');
   const [activeSeasonings, setActiveSeasonings] = useState({});
+  const [newExerciseName, setNewExerciseName] = useState('');
+  const [newExerciseMuscleGroup, setNewExerciseMuscleGroup] = useState('');
+  const [newExerciseNotes, setNewExerciseNotes] = useState('');
+  const [createExerciseError, setCreateExerciseError] = useState('');
+  const [createExerciseContext, setCreateExerciseContext] = useState('workout');
+  const [lastCreatedExerciseId, setLastCreatedExerciseId] = useState('');
 
-  const [customExercise, setCustomExercise] = useState('');
-  const [prevData, setPrevData] = useState({}); 
+  const prevData = useMemo(() => {
+    if (!isWorkoutActive || workoutHistory.length === 0) return {};
+
+    const activeExercises = Object.keys(activeWorkout);
+    const newPrevData = {};
+
+    activeExercises.forEach(exName => {
+      const lastWorkoutWithEx = workoutHistory.find(h => h.data && h.data[exName]);
+      if (lastWorkoutWithEx) {
+        const lastSets = lastWorkoutWithEx.data[exName];
+        const bestSet = lastSets.reduce((prev, current) => (parseFloat(prev.weight) > parseFloat(current.weight)) ? prev : current);
+        newPrevData[exName] = `${bestSet.weight}kg x ${bestSet.reps}`;
+      }
+    });
+
+    return newPrevData;
+  }, [activeWorkout, isWorkoutActive, workoutHistory]); 
+
+  const allExerciseLibrary = useMemo(() => {
+    const library = [];
+    const seenExercises = new Set();
+
+    Object.entries(EXERCISE_DATABASE).forEach(([muscleGroup, exercises]) => {
+      exercises.forEach(exerciseName => {
+        const key = `${muscleGroup}|${exerciseName.toLowerCase()}`;
+        if (seenExercises.has(key)) return;
+
+        seenExercises.add(key);
+        library.push({
+          exerciseId: createDefaultExerciseId(muscleGroup, exerciseName),
+          exerciseName,
+          muscleGroup,
+          isCustom: false,
+        });
+      });
+    });
+
+    customExercises.forEach(exercise => {
+      const exerciseName = (exercise.name || '').trim();
+      if (!exerciseName) return;
+
+      const rawMuscleGroup = exercise.muscleGroup || exercise.category || 'Other';
+      const muscleGroup = rawMuscleGroup === 'Custom' ? 'Other' : rawMuscleGroup;
+      const key = `${muscleGroup}|${exerciseName.toLowerCase()}`;
+      if (seenExercises.has(key)) return;
+
+      seenExercises.add(key);
+      library.push({
+        exerciseId: exercise.id || `custom-${exerciseName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+        exerciseName,
+        muscleGroup,
+        isCustom: true,
+      });
+    });
+
+    return library;
+  }, [customExercises]);
+
+  const selectedExerciseHistory = useMemo(() => (
+    getExerciseHistory(workoutHistory, selectedExerciseHistoryName)
+  ), [workoutHistory, selectedExerciseHistoryName]);
+
+  const selectedExerciseBestSet = useMemo(() => (
+    getBestSetForExercise(selectedExerciseHistory)
+  ), [selectedExerciseHistory]);
 
   // --- USE EFFECTS ---
   useEffect(() => {
@@ -153,22 +334,6 @@ export default function App() {
     }
     return () => clearInterval(interval);
   }, [isWorkoutActive]);
-
-  useEffect(() => {
-    if (isWorkoutActive && workoutHistory.length > 0) {
-      const activeExercises = Object.keys(activeWorkout);
-      let newPrevData = {};
-      activeExercises.forEach(exName => {
-        const lastWorkoutWithEx = workoutHistory.find(h => h.data && h.data[exName]);
-        if (lastWorkoutWithEx) {
-          const lastSets = lastWorkoutWithEx.data[exName];
-          const bestSet = lastSets.reduce((prev, current) => (parseFloat(prev.weight) > parseFloat(current.weight)) ? prev : current);
-          newPrevData[exName] = `${bestSet.weight}kg x ${bestSet.reps}`;
-        }
-      });
-      setPrevData(newPrevData);
-    }
-  }, [activeWorkout, isWorkoutActive, workoutHistory]);
 
   // --- HELPER FUNCTIONS ---
   const getTodayDocId = () => {
@@ -248,21 +413,6 @@ export default function App() {
     } catch (error) { 
       alert("Failed to delete log: " + error.message); 
     }
-  };
-
-  const calculateDynamicTDEE = (logs, windowSize = 14) => {
-    const windowLogs = logs.slice(0, windowSize);
-    const N = windowLogs.length;
-    
-    if (N < 7) return; 
-
-    const totalCalories = windowLogs.reduce((sum, log) => sum + log.calories, 0);
-    const newestWeight = windowLogs[0].weight;
-    const oldestWeight = windowLogs[N - 1].weight;
-    const deltaW = newestWeight - oldestWeight; 
-
-    const calculatedTDEE = (totalCalories - (deltaW * 7700)) / N;
-    setDynamicTDEE(Math.round(calculatedTDEE));
   };
 
   const formatTime = (totalSeconds) => {
@@ -452,11 +602,21 @@ export default function App() {
   };
 
   // --- WORKOUT LOGIC ---
-  const startWorkout = () => { setIsWorkoutActive(true); setSeconds(0); setActiveWorkout({}); };
+  const startWorkout = () => {
+    setIsWorkoutActive(true);
+    setSeconds(0);
+    setActiveWorkout({});
+    setCurrentTemplateId(null);
+    setCurrentTemplateName('');
+  };
 
   const discardWorkout = () => {
     if(window.confirm("Are you sure you want to discard this session? All progress will be lost.")) {
-      setIsWorkoutActive(false); setActiveWorkout({}); setSeconds(0);
+      setIsWorkoutActive(false);
+      setActiveWorkout({});
+      setSeconds(0);
+      setCurrentTemplateId(null);
+      setCurrentTemplateName('');
     }
   };
 
@@ -465,6 +625,239 @@ export default function App() {
       setActiveWorkout(prev => ({ ...prev, [exerciseName]: [{ reps: '', weight: '', completed: false }] }));
     }
     setShowExerciseModal(false);
+  };
+
+  const openExerciseHistoryModal = (e, exerciseName) => {
+    e.stopPropagation();
+    setSelectedExerciseHistoryName(exerciseName);
+  };
+
+  const openCreateExerciseModal = (context = 'workout') => {
+    const sourceSearchQuery = context === 'template' ? templateExerciseSearch : exerciseSearchQuery;
+
+    setCreateExerciseContext(context);
+    setNewExerciseName(sourceSearchQuery.trim());
+    setNewExerciseMuscleGroup('');
+    setNewExerciseNotes('');
+    setCreateExerciseError('');
+    setShowCreateExerciseModal(true);
+  };
+
+  const closeCreateExerciseModal = () => {
+    setShowCreateExerciseModal(false);
+    setCreateExerciseError('');
+  };
+
+  const saveCustomExercise = async () => {
+    if (!user) return;
+
+    const exerciseName = newExerciseName.trim();
+    const muscleGroup = newExerciseMuscleGroup.trim();
+    const notes = newExerciseNotes.trim();
+
+    if (!exerciseName) {
+      setCreateExerciseError('Exercise name is required.');
+      return;
+    }
+
+    if (!muscleGroup) {
+      setCreateExerciseError('Please select a muscle group.');
+      return;
+    }
+
+    const alreadyExistsInGroup = allExerciseLibrary.some(exercise =>
+      exercise.muscleGroup === muscleGroup &&
+      exercise.exerciseName.toLowerCase() === exerciseName.toLowerCase()
+    );
+
+    if (alreadyExistsInGroup) {
+      setCreateExerciseError('An exercise with this name already exists in this muscle group.');
+      return;
+    }
+
+    const now = Date.now();
+    const exerciseDoc = {
+      name: exerciseName,
+      muscleGroup,
+      createdAt: now,
+      updatedAt: now,
+      isCustom: true,
+    };
+
+    if (notes) exerciseDoc.notes = notes;
+
+    try {
+      const docRef = await addDoc(collection(db, "users", user.uid, "custom_exercises"), exerciseDoc);
+      const createdExercise = { id: docRef.id, ...exerciseDoc };
+      setCustomExercises(prev => [...prev, createdExercise]);
+      setLastCreatedExerciseId(docRef.id);
+
+      if (createExerciseContext === 'template') {
+        setTemplateExerciseSearch(exerciseName);
+        setTemplateFormError('');
+      } else {
+        setExerciseSearchQuery(exerciseName);
+      }
+
+      setShowCreateExerciseModal(false);
+      setNewExerciseName('');
+      setNewExerciseMuscleGroup('');
+      setNewExerciseNotes('');
+      setCreateExerciseError('');
+    } catch (error) {
+      setCreateExerciseError("Error creating exercise: " + error.message);
+    }
+  };
+
+  const resetTemplateForm = () => {
+    setEditingTemplateId(null);
+    setTemplateName('');
+    setTemplateNotes('');
+    setTemplateExercises([]);
+    setTemplateExerciseSearch('');
+    setTemplateFormError('');
+  };
+
+  const openCreateTemplateModal = () => {
+    resetTemplateForm();
+    setShowTemplateModal(true);
+  };
+
+  const openEditTemplateModal = (template) => {
+    setEditingTemplateId(template.id);
+    setTemplateName(template.name || '');
+    setTemplateNotes(template.notes || '');
+    setTemplateExercises((template.exercises || []).map(normalizeTemplateExercise));
+    setTemplateExerciseSearch('');
+    setTemplateFormError('');
+    setShowTemplateModal(true);
+  };
+
+  const closeTemplateModal = () => {
+    setShowTemplateModal(false);
+    resetTemplateForm();
+  };
+
+  const addExerciseToTemplate = (exercise) => {
+    const alreadyAdded = templateExercises.some(templateExercise =>
+      templateExercise.exerciseName.toLowerCase() === exercise.exerciseName.toLowerCase() &&
+      templateExercise.muscleGroup === exercise.muscleGroup
+    );
+
+    if (alreadyAdded) {
+      setTemplateFormError('This exercise is already in the template.');
+      return;
+    }
+
+    setTemplateExercises(prev => [
+      ...prev,
+      normalizeTemplateExercise({
+        exerciseId: exercise.exerciseId,
+        exerciseName: exercise.exerciseName,
+        muscleGroup: exercise.muscleGroup,
+        sets: createDefaultTemplateSet(3),
+      }),
+    ]);
+    setTemplateExerciseSearch('');
+    setTemplateFormError('');
+  };
+
+  const removeTemplateExercise = (index) => {
+    setTemplateExercises(prev => prev.filter((_, exerciseIndex) => exerciseIndex !== index));
+    setTemplateFormError('');
+  };
+
+  const updateTemplateExerciseSetCount = (index, count) => {
+    setTemplateExercises(prev => prev.map((exercise, exerciseIndex) => {
+      if (exerciseIndex !== index) return exercise;
+
+      const currentSets = exercise.sets || [];
+      const fallbackSet = currentSets[0] || { reps: '', weight: '' };
+      return {
+        ...exercise,
+        sets: createDefaultTemplateSet(count, fallbackSet.reps, fallbackSet.weight),
+      };
+    }));
+  };
+
+  const updateTemplateExerciseSetValue = (index, field, value) => {
+    setTemplateExercises(prev => prev.map((exercise, exerciseIndex) => {
+      if (exerciseIndex !== index) return exercise;
+
+      return {
+        ...exercise,
+        sets: (exercise.sets || []).map(set => ({ ...set, [field]: value })),
+      };
+    }));
+  };
+
+  const saveWorkoutTemplate = async () => {
+    if (!user) return;
+
+    const normalizedExercises = templateExercises.map(normalizeTemplateExercise);
+    const validation = validateTemplate({
+      name: templateName,
+      exercises: normalizedExercises,
+    });
+
+    if (!validation.isValid) {
+      setTemplateFormError(validation.message);
+      return;
+    }
+
+    const now = Date.now();
+    const existingTemplate = workoutTemplates.find(template => template.id === editingTemplateId);
+    const notes = templateNotes.trim();
+    const templateDoc = {
+      name: templateName.trim(),
+      exercises: normalizedExercises,
+      createdAt: existingTemplate?.createdAt || now,
+      updatedAt: now,
+    };
+
+    if (notes) templateDoc.notes = notes;
+
+    try {
+      if (editingTemplateId) {
+        await setDoc(doc(db, "users", user.uid, "workout_templates", editingTemplateId), templateDoc);
+        setWorkoutTemplates(prev => prev
+          .map(template => template.id === editingTemplateId ? { id: editingTemplateId, ...templateDoc } : template)
+          .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+      } else {
+        const docRef = await addDoc(collection(db, "users", user.uid, "workout_templates"), templateDoc);
+        setWorkoutTemplates(prev => [{ id: docRef.id, ...templateDoc }, ...prev]);
+      }
+
+      closeTemplateModal();
+    } catch (error) {
+      setTemplateFormError("Error saving template: " + error.message);
+    }
+  };
+
+  const deleteWorkoutTemplate = async (template) => {
+    if (!user) return;
+    if (!window.confirm(`Delete template "${template.name}"?`)) return;
+
+    try {
+      await deleteDoc(doc(db, "users", user.uid, "workout_templates", template.id));
+      setWorkoutTemplates(prev => prev.filter(item => item.id !== template.id));
+    } catch (error) {
+      alert("Error deleting template: " + error.message);
+    }
+  };
+
+  const startWorkoutFromTemplate = (template) => {
+    const templateWorkout = convertTemplateToActiveWorkout(template);
+    if (Object.keys(templateWorkout).length === 0) {
+      alert("This template has no exercises.");
+      return;
+    }
+
+    setActiveWorkout(templateWorkout);
+    setCurrentTemplateId(template.id);
+    setCurrentTemplateName(template.name || '');
+    setSeconds(0);
+    setIsWorkoutActive(true);
   };
 
   const updateSet = (exercise, setIndex, field, value) => {
@@ -499,14 +892,26 @@ export default function App() {
   const finishWorkout = async () => {
     if (Object.keys(activeWorkout).length === 0) return alert("Log data to proceed.");
     try {
-      await addDoc(collection(db, "users", user.uid, "history"), {
+      const historyDoc = {
         timestamp: Date.now(),
         date: new Date().toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
         matchDate: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), 
         duration: formatTime(seconds),
-        data: activeWorkout
-      });
-      setIsWorkoutActive(false); setActiveWorkout({}); setActiveTab('history'); setSelectedDate(null);
+        data: activeWorkout,
+      };
+
+      if (currentTemplateId && currentTemplateName) {
+        historyDoc.templateId = currentTemplateId;
+        historyDoc.templateName = currentTemplateName;
+      }
+
+      await addDoc(collection(db, "users", user.uid, "history"), historyDoc);
+      setIsWorkoutActive(false);
+      setActiveWorkout({});
+      setCurrentTemplateId(null);
+      setCurrentTemplateName('');
+      setActiveTab('history');
+      setSelectedDate(null);
     } catch (e) { alert("Error saving workout: " + e.message); }
   };
 
@@ -533,16 +938,16 @@ export default function App() {
   };
 
   // --- RENDER FLOW ---
-  if (authLoading) return <div style={styles.appContainer}><p style={{padding: '50px'}}>Loading...</p></div>;
+  if (authLoading) return <div style={styles.appContainer}><p style={{padding: '50px', color: THEME.textSecondary}}>Loading...</p></div>;
 
   if (!user) {
     return (
       <div style={{...styles.appContainer, justifyContent: 'center', alignItems: 'center', padding: '40px'}}>
-        <h1 style={{color: '#0A84FF', fontSize: '32px', marginBottom: '40px'}}>Elite Tracker</h1>
+        <h1 style={styles.authTitle}>Elite Tracker</h1>
         <input type="email" placeholder="Email" style={styles.authInput} onChange={(e) => setEmail(e.target.value)} />
         <input type="password" placeholder="Password" style={styles.authInput} onChange={(e) => setPassword(e.target.value)} />
-        <button onClick={() => handleAuth('login')} style={styles.authButton}>Login</button>
-        <button onClick={() => handleAuth('signup')} style={{...styles.authButton, backgroundColor: '#1C1C1E', marginTop: '10px'}}>Sign Up</button>
+        <button className="mu-button mu-main-btn" onClick={() => handleAuth('login')} style={styles.authButton}>Login</button>
+        <button className="mu-button mu-secondary-btn" onClick={() => handleAuth('signup')} style={{...styles.authButton, ...styles.secondaryButton, marginTop: '10px'}}>Sign Up</button>
       </div>
     );
   }
@@ -552,8 +957,11 @@ export default function App() {
       {/* GLOBAL HEADER & MENU BUTTON */}
       {!isWorkoutActive && (
         <header style={styles.globalHeader}>
-          <h1 style={{margin: 0, fontSize: '20px', color: '#0A84FF', fontWeight: 'bold'}}>Elite Tracker</h1>
-          <button onClick={() => setIsMenuOpen(true)} style={styles.menuButton}>☰</button>
+          <h1 style={styles.brandTitle}>
+            Elite Tracker
+            <span style={styles.brandMarker}></span>
+          </h1>
+          <button className="mu-icon-button" onClick={() => setIsMenuOpen(true)} style={styles.menuButton}>☰</button>
         </header>
       )}
 
@@ -563,20 +971,64 @@ export default function App() {
         {activeTab === 'workout' && (
           <div>
             {!isWorkoutActive ? (
-              <div style={{display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '50px 20px'}}>
-                <h2 style={{fontSize: '24px', marginBottom: '20px'}}>Ready to train?</h2>
-                <button onClick={startWorkout} style={styles.mainBtn}>Start an Empty Workout</button>
+              <div style={styles.workoutHome}>
+                <div style={styles.startPanel}>
+                  <p style={styles.eyebrow}>Workout</p>
+                  <h2 style={{fontSize: '28px', margin: '0 0 10px 0', color: THEME.textPrimary}}>Ready to train?</h2>
+                  <p style={{color: THEME.textSecondary, margin: '0 0 26px 0', maxWidth: '320px'}}>Track the session cleanly, keep the numbers honest.</p>
+                  <button className="mu-button mu-main-btn" onClick={startWorkout} style={styles.mainBtn}>Start an Empty Workout</button>
+                </div>
+
+                <section style={styles.templateSection}>
+                  <div style={styles.templateSectionHeader}>
+                    <h2 style={styles.templateSectionTitle}>Templates</h2>
+                    <button className="mu-button mu-secondary-btn" onClick={openCreateTemplateModal} style={styles.createTemplateBtn}>
+                      + Create Template
+                    </button>
+                  </div>
+
+                  {templatesError && (
+                    <p style={styles.templateErrorText}>{templatesError}</p>
+                  )}
+
+                  {workoutTemplates.length === 0 ? (
+                    <div style={styles.templateEmptyState}>
+                      <p style={{margin: 0, color: THEME.textSecondary}}>No templates yet. Create your first workout template.</p>
+                    </div>
+                  ) : (
+                    <div style={styles.templateCardList}>
+                      {workoutTemplates.map(template => (
+                        <div key={template.id} style={styles.templateCard}>
+                          <div style={styles.templateCardHeader}>
+                            <div style={{minWidth: 0}}>
+                              <h3 style={styles.templateCardTitle}>{template.name}</h3>
+                              <p style={styles.templateExerciseCount}>{(template.exercises || []).length} exercises</p>
+                            </div>
+                          </div>
+                          {template.notes && (
+                            <p style={styles.templateNotes}>{template.notes}</p>
+                          )}
+                          <div style={styles.templateCardActions}>
+                            <button className="mu-button mu-main-btn" onClick={() => startWorkoutFromTemplate(template)} style={styles.templateStartBtn}>Start</button>
+                            <button className="mu-button mu-secondary-btn" onClick={() => openEditTemplateModal(template)} style={styles.templateActionBtn}>Edit</button>
+                            <button className="mu-button mu-danger-btn" onClick={() => deleteWorkoutTemplate(template)} style={styles.templateDeleteBtn}>Delete</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
               </div>
             ) : (
               <div>
                 <div style={styles.topBar}>
-                  <span style={{color: '#8E8E93', fontSize: '20px', cursor: 'pointer'}} onClick={discardWorkout}>▼</span>
-                  <span style={{color: '#0A84FF', fontWeight: 'bold', cursor: 'pointer', fontSize: '18px'}} onClick={finishWorkout}>Finish</span>
+                  <span style={{color: THEME.textSecondary, fontSize: '20px', cursor: 'pointer'}} onClick={discardWorkout}>▼</span>
+                  <span style={{color: THEME.primaryRed, fontWeight: '800', cursor: 'pointer', fontSize: '18px'}} onClick={finishWorkout}>Finish</span>
                 </div>
                 <h1 style={styles.timerText}>{formatTime(seconds)}</h1>
 
                 {Object.keys(activeWorkout).length === 0 ? (
-                  <p style={{textAlign: 'center', color: '#8E8E93', marginTop: '40px'}}>Tap below to add your first exercise.</p>
+                  <p style={{textAlign: 'center', color: THEME.textSecondary, marginTop: '40px'}}>Tap below to add your first exercise.</p>
                 ) : (
                   Object.entries(activeWorkout).map(([exercise, sets]) => (
                     <div key={exercise} style={styles.exerciseBlock}>
@@ -589,7 +1041,11 @@ export default function App() {
                         <span style={styles.checkCol}>✓</span>
                       </div>
                       {sets.map((set, idx) => (
-                        <div key={idx} style={{...styles.setRow, backgroundColor: set.completed ? 'rgba(52, 199, 89, 0.15)' : 'transparent'}}>
+                        <div key={idx} style={{
+                          ...styles.setRow,
+                          backgroundColor: set.completed ? THEME.successSoft : 'transparent',
+                          borderColor: set.completed ? 'rgba(52, 199, 89, 0.38)' : 'transparent'
+                        }}>
                           <span style={styles.setCol}>{idx + 1}</span>
                           <span style={styles.prevCol}>{prevData[exercise] || "—"}</span>
                           <div style={styles.inputCol}>
@@ -603,7 +1059,7 @@ export default function App() {
                             />
                           </div>
                           <div style={styles.inputCol}><input type="number" placeholder="0" value={set.reps} onChange={(e) => updateSet(exercise, idx, 'reps', e.target.value)} style={styles.inputField} /></div>
-                          <div style={styles.checkCol}><button onClick={() => toggleSetCompletion(exercise, idx)} style={{...styles.checkButton, backgroundColor: set.completed ? '#34C759' : '#2C2C2E', color: set.completed ? '#FFFFFF' : '#8E8E93'}}>✓</button></div>
+                          <div style={styles.checkCol}><button className="mu-icon-button" onClick={() => toggleSetCompletion(exercise, idx)} style={{...styles.checkButton, backgroundColor: set.completed ? THEME.successGreen : THEME.bgDark, color: set.completed ? THEME.bgBlack : THEME.textSecondary, borderColor: set.completed ? THEME.successGreen : THEME.border}}>✓</button></div>
                         </div>
                       ))}
                       <div style={{textAlign: 'center', marginTop: '10px'}}><span onClick={() => addSet(exercise)} style={styles.addSetText}>+ Add Set</span></div>
@@ -612,8 +1068,8 @@ export default function App() {
                 )}
                 
                 <div style={{padding: '20px', display: 'flex', flexDirection: 'column', gap: '15px'}}>
-                  <button onClick={() => setShowExerciseModal(true)} style={styles.mainBtn}>+ Add Exercises</button>
-                  <button onClick={discardWorkout} style={styles.discardBtn}>Discard Workout</button>
+                  <button className="mu-button mu-main-btn" onClick={() => setShowExerciseModal(true)} style={styles.mainBtn}>+ Add Exercises</button>
+                  <button className="mu-button mu-secondary-btn" onClick={discardWorkout} style={styles.discardBtn}>Discard Workout</button>
                 </div>
               </div>
             )}
@@ -623,14 +1079,14 @@ export default function App() {
         {/* HISTORY TAB */}
         {activeTab === 'history' && (
           <div style={{padding: '20px'}}>
-            <h1 style={{fontSize: '28px', marginBottom: '20px'}}>Your Progress</h1>
+            <h1 style={styles.pageTitle}>Your Progress</h1>
             
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-              <button onClick={() => { setWeekOffset(w => w - 1); setSelectedDate(null); }} style={styles.navArrow}>◀ Past</button>
-              <span style={{ fontWeight: 'bold', fontSize: '14px', color: '#8E8E93', textTransform: 'uppercase', letterSpacing: '1px' }}>
+              <button className="mu-text-button" onClick={() => { setWeekOffset(w => w - 1); setSelectedDate(null); }} style={styles.navArrow}>◀ Past</button>
+              <span style={{ fontWeight: 'bold', fontSize: '14px', color: THEME.textSecondary, textTransform: 'uppercase', letterSpacing: '1px' }}>
                 {weekOffset === 0 ? "Current Week" : `${Math.abs(weekOffset)} Week(s) Ago`}
               </span>
-              <button onClick={() => { setWeekOffset(w => w + 1); setSelectedDate(null); }} disabled={weekOffset === 0} style={{ ...styles.navArrow, opacity: weekOffset === 0 ? 0.2 : 1 }}>Future ▶</button>
+              <button className="mu-text-button" onClick={() => { setWeekOffset(w => w + 1); setSelectedDate(null); }} disabled={weekOffset === 0} style={{ ...styles.navArrow, opacity: weekOffset === 0 ? 0.2 : 1 }}>Future ▶</button>
             </div>
             
             <div style={styles.calendarContainer}>
@@ -640,25 +1096,26 @@ export default function App() {
                 return (
                   <div key={dayInfo.date} onClick={() => setSelectedDate(isSelected ? null : dayInfo.matchString)} style={{
                     ...styles.calendarDay, 
-                    backgroundColor: isSelected ? '#0A84FF' : (isWorkoutDay ? '#34C759' : '#1C1C1E'),
-                    border: dayInfo.isToday ? '1px solid #0A84FF' : '1px solid transparent',
+                    backgroundColor: isSelected ? THEME.primaryRed : (isWorkoutDay ? THEME.goldSoft : THEME.cardBg),
+                    border: dayInfo.isToday ? `1px solid ${THEME.primaryRed}` : (isWorkoutDay ? `1px solid rgba(242, 201, 76, 0.4)` : '1px solid transparent'),
+                    boxShadow: isSelected ? '0 10px 22px rgba(218, 41, 28, 0.28)' : 'none',
                     cursor: 'pointer', transform: isSelected ? 'scale(1.1)' : 'scale(1)', transition: 'all 0.2s ease'
                   }}>
-                    <span style={{fontSize: '10px', color: (isSelected || isWorkoutDay) ? '#000' : '#8E8E93', fontWeight: 'bold'}}>{dayInfo.dayName}</span>
-                    <span style={{fontSize: '16px', color: (isSelected || isWorkoutDay) ? '#000' : '#FFF', fontWeight: 'bold'}}>{dayInfo.date}</span>
+                    <span style={{fontSize: '10px', color: isSelected ? THEME.textPrimary : (isWorkoutDay ? THEME.accentGold : THEME.textSecondary), fontWeight: 'bold'}}>{dayInfo.dayName}</span>
+                    <span style={{fontSize: '16px', color: isSelected ? THEME.textPrimary : (isWorkoutDay ? THEME.accentGold : THEME.textPrimary), fontWeight: 'bold'}}>{dayInfo.date}</span>
                   </div>
                 );
               })}
             </div>
 
             {selectedDate && (
-              <p style={{color: '#0A84FF', textAlign: 'center', marginBottom: '15px', cursor: 'pointer'}} onClick={() => setSelectedDate(null)}>
+              <p style={{color: THEME.primaryRed, textAlign: 'center', marginBottom: '15px', cursor: 'pointer', fontWeight: 700}} onClick={() => setSelectedDate(null)}>
                 Showing workouts for {selectedDate} (Tap to show all)
               </p>
             )}
 
             {workoutHistory.filter(entry => !selectedDate || entry.date.includes(selectedDate)).length === 0 ? (
-              <p style={{color: '#8E8E93', textAlign: 'center', marginTop: '40px'}}>
+              <p style={{color: THEME.textSecondary, textAlign: 'center', marginTop: '40px'}}>
                 {selectedDate ? `No workouts recorded on ${selectedDate}` : "No history available."}
               </p>
             ) : (
@@ -667,9 +1124,9 @@ export default function App() {
                   <div style={styles.historyHeader}>
                     <div>
                       <p style={{margin: 0, fontWeight: 'bold', fontSize: '18px'}}>{entry.date}</p>
-                      <p style={{margin: '5px 0 0 0', color: '#0A84FF', fontWeight: 'bold', fontSize: '14px'}}>⏱ {entry.duration}</p>
+                      <p style={{margin: '5px 0 0 0', color: THEME.accentGold, fontWeight: 'bold', fontSize: '14px'}}>⏱ {entry.duration}</p>
                     </div>
-                    <button onClick={() => deleteHistoryEntry(entry.id)} style={styles.deleteBtn}>Delete</button>
+                    <button className="mu-button mu-danger-btn" onClick={() => deleteHistoryEntry(entry.id)} style={styles.deleteBtn}>Delete</button>
                   </div>
                   {Object.entries(entry.data).map(([exName, exSets]) => {
                     const completedSets = exSets.filter(s => s.completed);
@@ -696,37 +1153,37 @@ export default function App() {
         {/* METABOLISM & TREND TAB */}
         {activeTab === 'tdee' && (
           <div style={{padding: '20px'}}>
-            <h2 style={{fontSize: '24px', marginBottom: '20px', textAlign: 'center'}}>Metabolism Engine</h2>
+            <h2 style={styles.pageTitle}>Metabolism Engine</h2>
             
-            <div style={{backgroundColor: '#1C1C1E', padding: '20px', borderRadius: '12px', marginBottom: '30px', textAlign: 'center'}}>
-              <p style={{color: '#8E8E93', margin: '0 0 10px 0'}}>Actual TDEE (Dynamic):</p>
-              <p style={{fontSize: '36px', fontWeight: 'bold', color: '#0A84FF', margin: 0}}>
+            <div style={styles.dashboardCard}>
+              <p style={{color: THEME.textSecondary, margin: '0 0 10px 0'}}>Actual TDEE (Dynamic):</p>
+              <p style={{fontSize: '36px', fontWeight: '900', color: THEME.accentGold, margin: 0, letterSpacing: '0'}}>
                 {dynamicTDEE ? `${dynamicTDEE} kcal` : "Collecting data..."}
               </p>
-              {!dynamicTDEE && <p style={{fontSize: '12px', color: '#8E8E93', marginTop: '10px'}}>A minimum of 7 days logged is required for accurate algorithm calibration.</p>}
+              {!dynamicTDEE && <p style={{fontSize: '12px', color: THEME.textSecondary, marginTop: '10px'}}>A minimum of 7 days logged is required for accurate algorithm calibration.</p>}
             </div>
 
             {dailyLogs.length >= 2 && (
-              <div style={{backgroundColor: '#1C1C1E', padding: '20px', borderRadius: '12px', marginBottom: '30px'}}>
-                <h3 style={{margin: '0 0 15px 0', fontSize: '18px', color: '#FFF'}}>Weight Trend Analysis</h3>
+              <div style={styles.sectionCard}>
+                <h3 style={{margin: '0 0 15px 0', fontSize: '18px', color: THEME.textPrimary}}>Weight Trend Analysis</h3>
                 <div style={{height: '250px', width: '100%'}}>
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={generateTrendData()} margin={{ top: 5, right: 5, bottom: 5, left: -20 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#2C2C2E" vertical={false} />
-                      <XAxis dataKey="date" stroke="#8E8E93" fontSize={12} tickLine={false} />
-                      <YAxis stroke="#8E8E93" fontSize={12} tickLine={false} domain={['dataMin - 1', 'dataMax + 1']} />
-                      <Tooltip contentStyle={{backgroundColor: '#0A0A0A', border: '1px solid #2C2C2E', borderRadius: '8px', color: '#FFF'}} itemStyle={{color: '#FFF'}} />
-                      <Legend wrapperStyle={{fontSize: '12px', paddingTop: '10px'}} />
-                      <Line type="monotone" dataKey="Actual" stroke="#8E8E93" strokeWidth={2} strokeDasharray="5 5" dot={{r: 3, fill: '#8E8E93'}} name="Scale Weight" />
-                      <Line type="monotone" dataKey="Trend" stroke="#0A84FF" strokeWidth={3} dot={false} activeDot={{r: 6}} name="True Trend (EMA)" />
+                      <CartesianGrid strokeDasharray="3 3" stroke={THEME.border} vertical={false} />
+                      <XAxis dataKey="date" stroke={THEME.textSecondary} fontSize={12} tickLine={false} />
+                      <YAxis stroke={THEME.textSecondary} fontSize={12} tickLine={false} domain={['dataMin - 1', 'dataMax + 1']} />
+                      <Tooltip contentStyle={{backgroundColor: THEME.bgDark, border: `1px solid ${THEME.border}`, borderRadius: '8px', color: THEME.textPrimary}} itemStyle={{color: THEME.textPrimary}} />
+                      <Legend wrapperStyle={{fontSize: '12px', paddingTop: '10px', color: THEME.textSecondary}} />
+                      <Line type="monotone" dataKey="Actual" stroke={THEME.accentGold} strokeWidth={2} strokeDasharray="5 5" dot={{r: 3, fill: THEME.accentGold}} name="Scale Weight" />
+                      <Line type="monotone" dataKey="Trend" stroke={THEME.primaryRed} strokeWidth={3} dot={false} activeDot={{r: 6, fill: THEME.primaryRed}} name="True Trend (EMA)" />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
-                <p style={{fontSize: '11px', color: '#8E8E93', textAlign: 'center', marginTop: '10px'}}>The blue line represents your true weight trend, filtering out water retention and noise.</p>
+                <p style={{fontSize: '11px', color: THEME.textSecondary, textAlign: 'center', marginTop: '10px'}}>The red line represents your true weight trend, filtering out water retention and noise.</p>
               </div>
             )}
 
-            <h3 style={{fontSize: '18px', marginBottom: '15px', textAlign: 'left', color: '#FFF'}}>Daily Check-in</h3>
+            <h3 style={{fontSize: '18px', marginBottom: '15px', textAlign: 'left', color: THEME.textPrimary}}>Daily Check-in</h3>
             <div style={{display: 'flex', gap: '10px', marginBottom: '20px'}}>
               <input 
                 type="number" 
@@ -735,37 +1192,37 @@ export default function App() {
                 onChange={(e) => setDailyWeight(e.target.value)} 
                 style={{...styles.authInput, marginBottom: 0, flex: 1}} 
               />
-              <button onClick={updateDailyWeight} style={{...styles.mainBtn, width: '100px', borderRadius: '8px'}}>Update</button>
+              <button className="mu-button mu-main-btn" onClick={updateDailyWeight} style={{...styles.mainBtn, width: '100px', borderRadius: '8px'}}>Update</button>
             </div>
 
             <h3 style={{fontSize: '20px', marginTop: '40px', marginBottom: '20px'}}>Intake History</h3>
             {dailyLogs.length === 0 ? (
-              <p style={{color: '#8E8E93', textAlign: 'center'}}>No history available.</p>
+              <p style={{color: THEME.textSecondary, textAlign: 'center'}}>No history available.</p>
             ) : (
               dailyLogs.map(log => (
                 <div key={log.id} style={styles.historyCard}>
-                  <div style={{...styles.historyHeader, borderBottom: log.foods && log.foods.length > 0 ? '1px solid #2C2C2E' : 'none'}}>
+                  <div style={{...styles.historyHeader, borderBottom: log.foods && log.foods.length > 0 ? `1px solid ${THEME.border}` : 'none'}}>
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%'}}>
                       <div>
                         <p style={{margin: 0, fontWeight: 'bold', fontSize: '18px'}}>{log.date}</p>
-                        <p style={{margin: '5px 0 0 0', color: '#34C759', fontWeight: 'bold', fontSize: '16px'}}>{log.calories || 0} kcal</p>
-                        <p style={{margin: '5px 0 0 0', fontSize: '13px', color: '#8E8E93'}}>
-                          <span style={{color: '#FF453A'}}>P: {log.protein || 0}g</span> | <span style={{color: '#32ADE6'}}>C: {log.carbs || 0}g</span> | <span style={{color: '#FFD60A'}}>F: {log.fat || 0}g</span>
+                        <p style={{margin: '5px 0 0 0', color: THEME.accentGold, fontWeight: 'bold', fontSize: '16px'}}>{log.calories || 0} kcal</p>
+                        <p style={{margin: '5px 0 0 0', fontSize: '13px', color: THEME.textSecondary}}>
+                          <span style={{color: THEME.dangerRed}}>P: {log.protein || 0}g</span> | <span style={{color: THEME.macroCarbs}}>C: {log.carbs || 0}g</span> | <span style={{color: THEME.accentGold}}>F: {log.fat || 0}g</span>
                         </p>
-                        <p style={{margin: '5px 0 0 0', color: '#8E8E93', fontSize: '14px'}}>Body Weight: {log.weight || 'Not logged'} {log.weight ? 'kg' : ''}</p>
+                        <p style={{margin: '5px 0 0 0', color: THEME.textSecondary, fontSize: '14px'}}>Body Weight: {log.weight || 'Not logged'} {log.weight ? 'kg' : ''}</p>
                       </div>
-                      <button onClick={() => deleteDailyLog(log.id)} style={styles.deleteBtn}>Delete</button>
+                      <button className="mu-button mu-danger-btn" onClick={() => deleteDailyLog(log.id)} style={styles.deleteBtn}>Delete</button>
                     </div>
                   </div>
                   {log.foods && log.foods.length > 0 && (
                     <div style={{marginTop: '10px'}}>
                       {log.foods.map((food, idx) => (
                         <div key={idx} style={styles.historySetRow}>
-                          <span style={{fontWeight: 'bold', color: '#8E8E93', fontSize: '12px', width: '55px'}}>{food.time}</span>
+                          <span style={{fontWeight: 'bold', color: THEME.textSecondary, fontSize: '12px', width: '55px'}}>{food.time}</span>
                           <div style={styles.dottedLine}></div>
                           <div style={{textAlign: 'right'}}>
-                            <span style={{color: '#FFF', fontSize: '14px', display: 'block'}}>{food.name} ({food.weight}g)</span>
-                            <span style={{color: '#34C759', fontSize: '13px', fontWeight: 'bold'}}>{food.kcal} kcal</span>
+                            <span style={{color: THEME.textPrimary, fontSize: '14px', display: 'block'}}>{food.name} ({food.weight}g)</span>
+                            <span style={{color: THEME.accentGold, fontSize: '13px', fontWeight: 'bold'}}>{food.kcal} kcal</span>
                           </div>
                         </div>
                       ))}
@@ -780,7 +1237,7 @@ export default function App() {
         {/* NUTRITION SEARCH TAB */}
         {activeTab === 'food' && (
           <div style={{padding: '20px'}}>
-            <h2 style={{fontSize: '24px', marginBottom: '20px', textAlign: 'center'}}>Nutrition Search</h2>
+            <h2 style={styles.pageTitle}>Nutrition Search</h2>
             
             <div style={{display: 'flex', gap: '10px', marginBottom: '15px'}}>
               <input 
@@ -791,30 +1248,30 @@ export default function App() {
                 onKeyPress={(e) => e.key === 'Enter' && searchFood()}
                 style={{...styles.authInput, marginBottom: 0, flex: 1}} 
               />
-              <button onClick={searchFood} style={{...styles.mainBtn, width: '80px', borderRadius: '8px'}}>
+              <button className="mu-button mu-main-btn" onClick={searchFood} style={{...styles.mainBtn, width: '80px', borderRadius: '8px'}}>
                 {isSearchingFood ? "..." : "Search"}
               </button>
             </div>
 
             {foodResults.length > 0 ? (
-              <div style={{backgroundColor: '#0A0A0A', borderRadius: '12px', padding: '10px', maxHeight: '60vh', overflowY: 'auto'}}>
+              <div style={styles.resultsPanel}>
                 {foodResults.map((food) => (
-                  <div key={food.id} style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', borderBottom: '1px solid #1C1C1E'}}>
+                  <div key={food.id} style={styles.foodResultRow}>
                     <div style={{textAlign: 'left', flex: 1}}>
-                      <p style={{margin: '0 0 5px 0', fontSize: '15px', fontWeight: 'bold'}}>{food.name} <span style={{fontSize: '12px', color: '#8E8E93', fontWeight: 'normal'}}>{food.brand}</span></p>
-                      <p style={{margin: 0, fontSize: '12px', color: '#8E8E93'}}>
-                        <span style={{color: '#FF453A'}}>P: {food.protein}g</span> | <span style={{color: '#32ADE6'}}>C: {food.carbs}g</span> | <span style={{color: '#FFD60A'}}>F: {food.fat}g</span> 
+                      <p style={{margin: '0 0 5px 0', fontSize: '15px', fontWeight: 'bold'}}>{food.name} <span style={{fontSize: '12px', color: THEME.textSecondary, fontWeight: 'normal'}}>{food.brand}</span></p>
+                      <p style={{margin: 0, fontSize: '12px', color: THEME.textSecondary}}>
+                        <span style={{color: THEME.dangerRed}}>P: {food.protein}g</span> | <span style={{color: THEME.macroCarbs}}>C: {food.carbs}g</span> | <span style={{color: THEME.accentGold}}>F: {food.fat}g</span> 
                       </p>
                     </div>
                     <div style={{display: 'flex', flexDirection: 'column', alignItems: 'flex-end', marginLeft: '10px'}}>
-                      <span style={{color: '#34C759', fontWeight: 'bold', fontSize: '16px', marginBottom: '5px'}}>{food.kcal} kcal</span>
-                      <button onClick={() => openFoodModal(food)} style={{backgroundColor: '#1C1C1E', color: '#0A84FF', border: 'none', borderRadius: '6px', padding: '5px 10px', fontWeight: 'bold', cursor: 'pointer'}}>Customize</button>
+                      <span style={{color: THEME.accentGold, fontWeight: 'bold', fontSize: '16px', marginBottom: '5px'}}>{food.kcal} kcal</span>
+                      <button className="mu-button mu-secondary-btn" onClick={() => openFoodModal(food)} style={styles.smallSecondaryBtn}>Customize</button>
                     </div>
                   </div>
                 ))}
               </div>
             ) : (
-              <p style={{textAlign: 'center', color: '#8E8E93', marginTop: '40px'}}>Search for an item to see its nutritional value per 100g.</p>
+              <p style={{textAlign: 'center', color: THEME.textSecondary, marginTop: '40px'}}>Search for an item to see its nutritional value per 100g.</p>
             )}
           </div>
         )}
@@ -822,20 +1279,20 @@ export default function App() {
         {/* PROFILE / COACHING TAB */}
         {activeTab === 'you' && (
           <div style={{padding: '20px', textAlign: 'center'}}>
-            <h2 style={{fontSize: '24px', marginBottom: '20px', textAlign: 'center'}}>AI Coaching Setup</h2>
-            <div style={{backgroundColor: '#1C1C1E', padding: '20px', borderRadius: '12px', marginBottom: '30px', textAlign: 'left'}}>
+            <h2 style={styles.pageTitle}>AI Coaching Setup</h2>
+            <div style={{...styles.sectionCard, textAlign: 'left'}}>
               
               <div style={{display: 'flex', gap: '10px', marginBottom: '10px'}}>
                 <div style={{flex: 1}}>
-                  <label style={{fontSize: '12px', color: '#8E8E93'}}>Age</label>
+                  <label style={styles.inputLabel}>Age</label>
                   <input type="number" value={profileAge} onChange={(e) => setProfileAge(e.target.value)} style={{...styles.authInput, padding: '10px'}} />
                 </div>
                 <div style={{flex: 1}}>
-                  <label style={{fontSize: '12px', color: '#8E8E93'}}>Height (cm)</label>
+                  <label style={styles.inputLabel}>Height (cm)</label>
                   <input type="number" value={profileHeight} onChange={(e) => setProfileHeight(e.target.value)} style={{...styles.authInput, padding: '10px'}} />
                 </div>
                 <div style={{flex: 1}}>
-                  <label style={{fontSize: '12px', color: '#8E8E93'}}>Weight (kg)</label>
+                  <label style={styles.inputLabel}>Weight (kg)</label>
                   <input type="number" value={profileWeight} onChange={(e) => setProfileWeight(e.target.value)} style={{...styles.authInput, padding: '10px'}} />
                 </div>
               </div>
@@ -859,23 +1316,23 @@ export default function App() {
                 <option value="bulk">Muscle Gain (+300 kcal)</option>
               </select>
 
-              <button onClick={calculateCoachingMacros} style={{...styles.mainBtn, backgroundColor: '#0A84FF', color: '#FFF'}}>Generate Plan</button>
+              <button className="mu-button mu-main-btn" onClick={calculateCoachingMacros} style={styles.mainBtn}>Generate Plan</button>
 
               {targetMacros && (
-                <div style={{marginTop: '20px', padding: '15px', backgroundColor: '#0A0A0A', borderRadius: '8px', border: '1px solid #34C759'}}>
-                  <p style={{textAlign: 'center', color: '#34C759', fontWeight: 'bold', fontSize: '18px', margin: '0 0 10px 0'}}>Target: {targetMacros.kcal} kcal</p>
+                <div style={styles.macroSummaryCard}>
+                  <p style={{textAlign: 'center', color: THEME.accentGold, fontWeight: 'bold', fontSize: '18px', margin: '0 0 10px 0'}}>Target: {targetMacros.kcal} kcal</p>
                   <div style={{display: 'flex', justifyContent: 'space-between', textAlign: 'center'}}>
                     <div>
-                      <span style={{color: '#FF453A', display: 'block', fontWeight: 'bold'}}>{targetMacros.protein}g</span>
-                      <span style={{color: '#8E8E93', fontSize: '12px'}}>Protein</span>
+                      <span style={{color: THEME.dangerRed, display: 'block', fontWeight: 'bold'}}>{targetMacros.protein}g</span>
+                      <span style={{color: THEME.textSecondary, fontSize: '12px'}}>Protein</span>
                     </div>
                     <div>
-                      <span style={{color: '#32ADE6', display: 'block', fontWeight: 'bold'}}>{targetMacros.carbs}g</span>
-                      <span style={{color: '#8E8E93', fontSize: '12px'}}>Carbs</span>
+                      <span style={{color: THEME.macroCarbs, display: 'block', fontWeight: 'bold'}}>{targetMacros.carbs}g</span>
+                      <span style={{color: THEME.textSecondary, fontSize: '12px'}}>Carbs</span>
                     </div>
                     <div>
-                      <span style={{color: '#FFD60A', display: 'block', fontWeight: 'bold'}}>{targetMacros.fat}g</span>
-                      <span style={{color: '#8E8E93', fontSize: '12px'}}>Fat</span>
+                      <span style={{color: THEME.accentGold, display: 'block', fontWeight: 'bold'}}>{targetMacros.fat}g</span>
+                      <span style={{color: THEME.textSecondary, fontSize: '12px'}}>Fat</span>
                     </div>
                   </div>
                 </div>
@@ -883,11 +1340,11 @@ export default function App() {
             </div>
 
             <h2 style={{fontSize: '24px', marginBottom: '40px'}}>Account Details</h2>
-            <div style={{backgroundColor: '#1C1C1E', padding: '20px', borderRadius: '12px', marginBottom: '20px'}}>
-              <p style={{color: '#8E8E93', margin: '0 0 10px 0'}}>Logged in as:</p>
+            <div style={styles.sectionCard}>
+              <p style={{color: THEME.textSecondary, margin: '0 0 10px 0'}}>Logged in as:</p>
               <p style={{fontSize: '18px', fontWeight: 'bold', margin: 0}}>{user.email}</p>
             </div>
-            <button onClick={() => signOut(auth)} style={{...styles.authButton, backgroundColor: '#FF453A'}}>Sign Out</button>
+            <button className="mu-button mu-danger-btn" onClick={() => signOut(auth)} style={{...styles.authButton, backgroundColor: THEME.dangerRed, borderColor: THEME.dangerRed}}>Sign Out</button>
           </div>
         )}
       </div> 
@@ -896,71 +1353,295 @@ export default function App() {
       {showExerciseModal && (
         <div style={styles.modalOverlay}>
           <div style={styles.modalHeader}>
-            <span onClick={() => setShowExerciseModal(false)} style={{fontSize: '24px', cursor: 'pointer', color: '#8E8E93'}}>✕</span>
+            <span className="mu-icon-button" onClick={() => { setShowExerciseModal(false); setShowCreateExerciseModal(false); setSelectedExerciseHistoryName(''); }} style={styles.modalClose}>✕</span>
             <h2 style={{margin: 0, fontSize: '18px'}}>Add Exercises</h2>
             <span style={{width: '24px'}}></span>
           </div>
-          
-          <div style={{padding: '20px', borderBottom: '1px solid #1C1C1E', display: 'flex', gap: '10px'}}>
-            <input 
-              style={{...styles.authInput, marginBottom: 0, flex: 1}} 
-              placeholder="New exercise name..."
-              value={customExercise}
-              onChange={(e) => setCustomExercise(e.target.value)}
-            />
-            <button 
-              onClick={() => {
-                if(customExercise.trim()) {
-                  addExerciseToWorkout(customExercise.trim());
-                  setCustomExercise('');
-                }
-              }}
-              style={{...styles.mainBtn, width: '80px', borderRadius: '8px'}}
-            >Add</button>
+
+          <ExercisePicker
+            exerciseLibrary={allExerciseLibrary}
+            searchQuery={exerciseSearchQuery}
+            onSearchChange={setExerciseSearchQuery}
+            onSelectExercise={(exercise) => addExerciseToWorkout(exercise.exerciseName)}
+            onOpenCreateExercise={() => openCreateExerciseModal('workout')}
+            showHistoryButton
+            onOpenHistory={(event, exercise) => openExerciseHistoryModal(event, exercise.exerciseName)}
+            favoriteExercises={favoriteExercises}
+            onToggleFavorite={(event, exercise) => toggleFavorite(event, exercise.exerciseName)}
+            highlightedExerciseId={lastCreatedExerciseId}
+            styles={styles}
+            theme={THEME}
+          />
+        </div>
+      )}
+
+      {/* CREATE EXERCISE MODAL */}
+      {showCreateExerciseModal && (
+        <div style={{...styles.modalOverlay, zIndex: 150}}>
+          <div style={styles.modalHeader}>
+            <span style={{width: '24px'}}></span>
+            <h2 style={{margin: 0, fontSize: '18px'}}>Create Exercise</h2>
+            <span style={{width: '24px'}}></span>
           </div>
 
-          <div style={{overflowY: 'auto', paddingBottom: '50px'}}>
-            {Object.entries(EXERCISE_DATABASE).map(([category, exercises]) => {
-              
-              // Sort exercises: Favorites first
-              const sortedExercises = [...exercises].sort((a, b) => {
-                const aFav = favoriteExercises.includes(a);
-                const bFav = favoriteExercises.includes(b);
-                if (aFav && !bFav) return -1;
-                if (!aFav && bFav) return 1;
-                return 0;
-              });
+          <div style={styles.createExerciseModalBody}>
+            <label style={styles.formLabel}>Exercise name:</label>
+            <input
+              type="text"
+              placeholder="Smith Machine Incline Press"
+              value={newExerciseName}
+              onChange={(e) => {
+                setNewExerciseName(e.target.value);
+                setCreateExerciseError('');
+              }}
+              style={styles.authInput}
+            />
 
-              return (
-                <div key={category} style={{padding: '10px 20px'}}>
-                  <h3 style={{color: '#0A84FF', fontSize: '14px', textTransform: 'uppercase', letterSpacing: '1px', marginTop: '10px'}}>{category}</h3>
-                  {sortedExercises.map(ex => {
-                    const isFav = favoriteExercises.includes(ex);
-                    return (
-                      <div key={ex} onClick={() => addExerciseToWorkout(ex)} style={styles.exerciseListItem}>
-                        <div style={{display: 'flex', alignItems: 'center', gap: '12px'}}>
-                          <span 
-                            onClick={(e) => toggleFavorite(e, ex)} 
-                            style={{
-                              fontSize: '22px', 
-                              cursor: 'pointer', 
-                              color: isFav ? '#FFD60A' : '#2C2C2E',
-                              transition: 'color 0.2s'
-                            }}
-                          >
-                            {isFav ? '★' : '☆'}
-                          </span>
-                          <span style={{fontSize: '16px', color: isFav ? '#FFFFFF' : '#8E8E93', fontWeight: isFav ? 'bold' : 'normal'}}>
-                            {ex}
-                          </span>
-                        </div>
-                        <span style={{color: '#0A84FF', fontSize: '24px', fontWeight: '300'}}>+</span>
+            <label style={styles.formLabel}>Muscle group:</label>
+            <select
+              value={newExerciseMuscleGroup}
+              onChange={(e) => {
+                setNewExerciseMuscleGroup(e.target.value);
+                setCreateExerciseError('');
+              }}
+              style={{...styles.authInput, appearance: 'none'}}
+            >
+              <option value="">Select muscle group</option>
+              {MUSCLE_GROUP_OPTIONS.map(group => (
+                <option key={group} value={group}>{group}</option>
+              ))}
+            </select>
+
+            <label style={styles.formLabel}>Notes:</label>
+            <textarea
+              placeholder="Optional notes..."
+              value={newExerciseNotes}
+              onChange={(e) => setNewExerciseNotes(e.target.value)}
+              style={styles.textAreaField}
+            />
+
+            {createExerciseError && (
+              <p style={styles.formError}>{createExerciseError}</p>
+            )}
+
+            <div style={styles.createExerciseActions}>
+              <button className="mu-button mu-secondary-btn" onClick={closeCreateExerciseModal} style={styles.cancelBtn}>
+                Cancel
+              </button>
+              <button className="mu-button mu-main-btn" onClick={saveCustomExercise} style={styles.saveExerciseBtn}>
+                Save Exercise
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CREATE / EDIT TEMPLATE MODAL */}
+      {showTemplateModal && (
+        <div style={{...styles.modalOverlay, zIndex: 140}}>
+          <div style={styles.modalHeader}>
+            <span className="mu-icon-button" onClick={closeTemplateModal} style={styles.modalClose}>✕</span>
+            <h2 style={{margin: 0, fontSize: '18px'}}>{editingTemplateId ? 'Edit Template' : 'Create Template'}</h2>
+            <span style={{width: '24px'}}></span>
+          </div>
+
+          <div style={styles.templateModalBody}>
+            <label style={styles.formLabel}>Template name</label>
+            <input
+              type="text"
+              placeholder="Push Day"
+              value={templateName}
+              onChange={(e) => {
+                setTemplateName(e.target.value);
+                setTemplateFormError('');
+              }}
+              style={styles.authInput}
+            />
+
+            <label style={styles.formLabel}>Notes</label>
+            <textarea
+              placeholder="Optional notes..."
+              value={templateNotes}
+              onChange={(e) => setTemplateNotes(e.target.value)}
+              style={styles.textAreaField}
+            />
+
+            <div style={styles.templateLibraryPanel}>
+              <div style={styles.templateLibraryHeader}>
+                <h3 style={styles.templateSubTitle}>Add Exercise</h3>
+              </div>
+              <ExercisePicker
+                exerciseLibrary={allExerciseLibrary}
+                searchQuery={templateExerciseSearch}
+                onSearchChange={setTemplateExerciseSearch}
+                onSelectExercise={addExerciseToTemplate}
+                onOpenCreateExercise={() => openCreateExerciseModal('template')}
+                isExerciseSelected={(exercise) => templateExercises.some(templateExercise =>
+                  templateExercise.exerciseName.toLowerCase() === exercise.exerciseName.toLowerCase() &&
+                  templateExercise.muscleGroup === exercise.muscleGroup
+                )}
+                getSelectLabel={(_, selected) => selected ? 'Added' : 'Add'}
+                highlightedExerciseId={lastCreatedExerciseId}
+                compact
+                styles={styles}
+                theme={THEME}
+              />
+            </div>
+
+            <div style={styles.templateExerciseEditorHeader}>
+              <h3 style={styles.templateSubTitle}>Selected Exercises:</h3>
+              <span style={styles.templateExerciseCount}>{templateExercises.length} exercises</span>
+            </div>
+
+            {templateExercises.length === 0 ? (
+              <div style={styles.templateEmptyState}>
+                <p style={{margin: 0, color: THEME.textSecondary}}>Add at least one exercise to build this template.</p>
+              </div>
+            ) : (
+              <div style={styles.templateExerciseEditorList}>
+                {templateExercises.map((exercise, index) => (
+                  <div key={`${exercise.exerciseId}-${index}`} style={styles.templateExerciseEditorCard}>
+                    <div style={styles.templateExerciseEditorTop}>
+                      <div style={{minWidth: 0}}>
+                        <h4 style={styles.templateExerciseEditorTitle}>{index + 1}. {exercise.exerciseName}</h4>
+                        <p style={styles.templateExerciseEditorGroup}>{exercise.muscleGroup}</p>
                       </div>
-                    );
-                  })}
+                      <button className="mu-button mu-danger-btn" onClick={() => removeTemplateExercise(index)} style={styles.templateRemoveBtn}>
+                        Remove
+                      </button>
+                    </div>
+
+                    <div style={styles.templateExerciseFields}>
+                      <div>
+                        <label style={styles.inputLabel}>Number of sets</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={(exercise.sets || []).length}
+                          onChange={(e) => updateTemplateExerciseSetCount(index, e.target.value)}
+                          style={{...styles.authInput, marginBottom: 0, padding: '11px'}}
+                        />
+                      </div>
+                      <div>
+                        <label style={styles.inputLabel}>Reps per set</label>
+                        <input
+                          type="text"
+                          placeholder="8"
+                          value={getUniformSetValue(exercise.sets, 'reps')}
+                          onChange={(e) => updateTemplateExerciseSetValue(index, 'reps', e.target.value)}
+                          style={{...styles.authInput, marginBottom: 0, padding: '11px'}}
+                        />
+                      </div>
+                      <div>
+                        <label style={styles.inputLabel}>Optional weight</label>
+                        <input
+                          type="text"
+                          placeholder="Optional"
+                          value={getUniformSetValue(exercise.sets, 'weight')}
+                          onChange={(e) => updateTemplateExerciseSetValue(index, 'weight', e.target.value)}
+                          style={{...styles.authInput, marginBottom: 0, padding: '11px'}}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {templateFormError && (
+              <p style={styles.formError}>{templateFormError}</p>
+            )}
+
+            <div style={styles.templateModalActions}>
+              <button className="mu-button mu-secondary-btn" onClick={closeTemplateModal} style={styles.cancelBtn}>
+                Cancel
+              </button>
+              <button className="mu-button mu-main-btn" onClick={saveWorkoutTemplate} style={styles.saveExerciseBtn}>
+                Save Template
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EXERCISE HISTORY MODAL */}
+      {selectedExerciseHistoryName && (
+        <div style={styles.exerciseHistoryOverlay}>
+          <div style={styles.exerciseHistoryModal}>
+            <div style={styles.modalHeader}>
+              <span className="mu-icon-button" onClick={() => setSelectedExerciseHistoryName('')} style={styles.modalClose}>✕</span>
+              <h2 style={{margin: 0, fontSize: '18px'}}>Exercise History: {selectedExerciseHistoryName}</h2>
+              <span style={{width: '24px'}}></span>
+            </div>
+
+            <div style={styles.exerciseHistoryModalBody}>
+              {selectedExerciseHistory.length === 0 ? (
+                <div style={styles.exerciseHistoryEmptyState}>
+                  <p style={styles.exerciseHistoryEmptyTitle}>No history for this exercise yet.</p>
+                  <p style={styles.exerciseHistoryEmptyText}>Start a workout and complete this exercise to build history.</p>
                 </div>
-              );
-            })}
+              ) : (
+                <>
+                  <div style={styles.exerciseHistoryStatsGrid}>
+                    <div style={styles.exerciseHistoryStatCard}>
+                      <span style={styles.exerciseHistoryStatLabel}>Best Set:</span>
+                      <strong style={styles.exerciseHistoryStatValue}>
+                        {selectedExerciseBestSet
+                          ? `${formatHistoryMetric(selectedExerciseBestSet.weight)} kg × ${formatHistoryMetric(selectedExerciseBestSet.reps)} reps`
+                          : '— kg × — reps'}
+                      </strong>
+                    </div>
+                    <div style={styles.exerciseHistoryStatCard}>
+                      <span style={styles.exerciseHistoryStatLabel}>Last Performed:</span>
+                      <strong style={styles.exerciseHistoryStatValue}>{selectedExerciseHistory[0]?.date || 'Unknown date'}</strong>
+                    </div>
+                    <div style={styles.exerciseHistoryStatCard}>
+                      <span style={styles.exerciseHistoryStatLabel}>Total Sessions:</span>
+                      <strong style={styles.exerciseHistoryStatValue}>{selectedExerciseHistory.length}</strong>
+                    </div>
+                  </div>
+
+                  <h3 style={styles.exerciseHistorySectionTitle}>Session History:</h3>
+                  <div style={styles.exerciseHistorySessionList}>
+                    {selectedExerciseHistory.map((session, sessionIndex) => (
+                      <div key={`${session.date}-${sessionIndex}`} style={styles.exerciseHistorySessionCard}>
+                        <div style={styles.exerciseHistorySessionHeader}>
+                          <div>
+                            <h4 style={styles.exerciseHistorySessionDate}>{session.date || 'Unknown date'}</h4>
+                            <p style={styles.exerciseHistoryExerciseName}>{selectedExerciseHistoryName}</p>
+                          </div>
+                          {session.duration && <span style={styles.exerciseHistoryDuration}>{session.duration}</span>}
+                        </div>
+
+                        {session.sets.map(set => {
+                          const weightText = set.weight ? `${set.weight} kg` : '— kg';
+                          const repsText = set.reps ? `${set.reps} reps` : '— reps';
+
+                          return (
+                            <div key={`${session.date}-${set.setNumber}`} style={styles.exerciseHistorySetRow}>
+                              <span style={styles.exerciseHistorySetLabel}>Set {set.setNumber}:</span>
+                              <span style={styles.exerciseHistorySetValue}>{weightText} × {repsText}</span>
+                              {typeof set.completed === 'boolean' && (
+                                <span style={{
+                                  ...styles.exerciseHistoryCompletedBadge,
+                                  color: set.completed ? THEME.successGreen : THEME.textSecondary,
+                                  borderColor: set.completed ? 'rgba(52, 199, 89, 0.34)' : THEME.border,
+                                  backgroundColor: set.completed ? THEME.successSoft : THEME.bgDark,
+                                  gridColumn: '2 / -1',
+                                  justifySelf: 'flex-start',
+                                }}>
+                                  {set.completed ? 'Completed' : 'Not completed'}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -969,19 +1650,21 @@ export default function App() {
       {isMenuOpen && (
         <div style={styles.menuOverlay} onClick={() => setIsMenuOpen(false)}>
           <div style={styles.menuContent} onClick={(e) => e.stopPropagation()}>
-            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '40px'}}>
-              <h2 style={{margin: 0, color: '#8E8E93', fontSize: '14px', letterSpacing: '2px'}}>NAVIGATION</h2>
-              <span onClick={() => setIsMenuOpen(false)} style={styles.closeMenuBtn}>✕</span>
+            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '40px', padding: '0 20px'}}>
+              <h2 style={{margin: 0, color: THEME.textSecondary, fontSize: '14px', letterSpacing: '2px'}}>NAVIGATION</h2>
+              <span className="mu-icon-button" onClick={() => setIsMenuOpen(false)} style={styles.closeMenuBtn}>✕</span>
             </div>
             
             {['Workout', 'History', 'TDEE', 'Food', 'You'].map(tab => (
               <button 
+                className="mu-menu-item"
                 key={tab} 
                 onClick={() => { setActiveTab(tab.toLowerCase()); setIsMenuOpen(false); }} 
                 style={{
                   ...styles.menuItem, 
-                  color: activeTab === tab.toLowerCase() ? '#0A84FF' : '#FFFFFF',
-                  borderLeft: activeTab === tab.toLowerCase() ? '4px solid #0A84FF' : '4px solid transparent',
+                  color: activeTab === tab.toLowerCase() ? THEME.textPrimary : THEME.textSecondary,
+                  backgroundColor: activeTab === tab.toLowerCase() ? THEME.redSoft : 'transparent',
+                  borderLeft: activeTab === tab.toLowerCase() ? `4px solid ${THEME.primaryRed}` : '4px solid transparent',
                   paddingLeft: activeTab === tab.toLowerCase() ? '16px' : '20px'
                 }}
               >
@@ -996,14 +1679,14 @@ export default function App() {
       {selectedFood && (
         <div style={styles.modalOverlay}>
           <div style={styles.modalHeader}>
-            <span onClick={() => setSelectedFood(null)} style={{fontSize: '24px', cursor: 'pointer', color: '#8E8E93'}}>✕</span>
+            <span className="mu-icon-button" onClick={() => setSelectedFood(null)} style={styles.modalClose}>✕</span>
             <h2 style={{margin: 0, fontSize: '18px'}}>Log Food</h2>
             <span style={{width: '24px'}}></span>
           </div>
 
           <div style={{padding: '20px', overflowY: 'auto'}}>
-            <h3 style={{fontSize: '20px', color: '#0A84FF', marginBottom: '5px'}}>{selectedFood.name}</h3>
-            <p style={{color: '#8E8E93', fontSize: '14px', marginBottom: '20px'}}>Base: {selectedFood.kcal} kcal / 100g</p>
+            <h3 style={{fontSize: '20px', color: THEME.accentGold, marginBottom: '5px'}}>{selectedFood.name}</h3>
+            <p style={{color: THEME.textSecondary, fontSize: '14px', marginBottom: '20px'}}>Base: {selectedFood.kcal} kcal / 100g</p>
 
             <label style={{display: 'block', marginBottom: '8px', fontWeight: 'bold'}}>Weight (grams):</label>
             <input 
@@ -1026,7 +1709,7 @@ export default function App() {
             </select>
 
             <label style={{display: 'block', margin: '20px 0 10px 0', fontWeight: 'bold'}}>Condiments & Seasonings (per 100g):</label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', backgroundColor: '#1C1C1E', padding: '15px', borderRadius: '8px', marginBottom: '20px' }}>
+            <div style={styles.seasoningGrid}>
               {SEASONING_DATABASE.map(seasoning => (
                 <div key={seasoning.key} style={{display: 'flex', alignItems: 'flex-start'}}>
                   <input 
@@ -1034,17 +1717,17 @@ export default function App() {
                     id={`condiment_${seasoning.key}`}
                     checked={activeSeasonings[seasoning.key] || false}
                     onChange={(e) => setActiveSeasonings(prev => ({...prev, [seasoning.key]: e.target.checked}))}
-                    style={{width: '18px', height: '18px', marginRight: '8px', accentColor: '#0A84FF', flexShrink: 0, marginTop: '2px'}}
+                    style={{width: '18px', height: '18px', marginRight: '8px', accentColor: THEME.primaryRed, flexShrink: 0, marginTop: '2px'}}
                   />
                   <label htmlFor={`condiment_${seasoning.key}`} style={{fontSize: '13px', cursor: 'pointer', lineHeight: '1.4'}}>
-                    <span style={{color: '#FFF', display: 'block'}}>{seasoning.label}</span>
-                    <span style={{color: '#8E8E93', fontSize: '11px'}}>{seasoning.kcal > 0 ? `+${seasoning.kcal} kcal` : '0 kcal'}</span>
+                    <span style={{color: THEME.textPrimary, display: 'block'}}>{seasoning.label}</span>
+                    <span style={{color: THEME.textSecondary, fontSize: '11px'}}>{seasoning.kcal > 0 ? `+${seasoning.kcal} kcal` : '0 kcal'}</span>
                   </label>
                 </div>
               ))}
             </div>
 
-            <button onClick={confirmAndLogFood} style={{...styles.mainBtn, marginTop: '10px'}}>
+            <button className="mu-button mu-main-btn" onClick={confirmAndLogFood} style={{...styles.mainBtn, marginTop: '10px'}}>
               Confirm & Log
             </button>
           </div>
@@ -1056,47 +1739,733 @@ export default function App() {
 
 // 3. DESIGN SYSTEM 
 const styles = {
-  appContainer: { display: 'flex', flexDirection: 'column', height: '100vh', backgroundColor: '#000000', color: '#FFFFFF', fontFamily: '-apple-system, sans-serif' },
-  contentScroll: { flex: 1, overflowY: 'auto', paddingBottom: '20px' }, 
-  authInput: { width: '100%', padding: '15px', marginBottom: '15px', backgroundColor: '#1C1C1E', color: '#FFF', border: 'none', borderRadius: '8px', fontSize: '16px' },
-  authButton: { width: '100%', padding: '15px', backgroundColor: '#0A84FF', color: '#FFF', border: 'none', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' },
-  timerText: { fontSize: '48px', fontWeight: 'bold', textAlign: 'center', margin: '0 0 30px 0' },
-  topBar: { display: 'flex', justifyContent: 'space-between', padding: '20px', alignItems: 'center' },
-  mainBtn: { width: '100%', padding: '16px', backgroundColor: '#FFF', color: '#000', borderRadius: '30px', fontWeight: 'bold', border: 'none', fontSize: '16px', cursor: 'pointer' },
-  discardBtn: { width: '100%', padding: '16px', backgroundColor: '#1C1C1E', color: '#FF453A', borderRadius: '30px', fontWeight: 'bold', border: 'none', fontSize: '16px', cursor: 'pointer' },
-  deleteBtn: { backgroundColor: 'rgba(255, 69, 58, 0.1)', color: '#FF453A', border: 'none', borderRadius: '6px', padding: '8px 12px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer' },
-  calendarContainer: { display: 'flex', justifyContent: 'space-between', backgroundColor: '#0A0A0A', padding: '15px', borderRadius: '12px', marginBottom: '20px', border: '1px solid #1C1C1E' },
+  appContainer: {
+    display: 'flex',
+    flexDirection: 'column',
+    height: '100vh',
+    backgroundColor: THEME.bgBlack,
+    color: THEME.textPrimary,
+    fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif',
+  },
+  contentScroll: { flex: 1, overflowY: 'auto', paddingBottom: '20px' },
+  authTitle: {
+    color: THEME.textPrimary,
+    fontSize: '34px',
+    margin: '0 0 40px 0',
+    fontWeight: '900',
+    letterSpacing: '0',
+    textDecoration: `underline ${THEME.primaryRed}`,
+    textUnderlineOffset: '8px',
+  },
+  authInput: {
+    width: '100%',
+    padding: '15px',
+    marginBottom: '15px',
+    backgroundColor: THEME.bgDark,
+    color: THEME.textPrimary,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '10px',
+    fontSize: '16px',
+    outline: 'none',
+    boxSizing: 'border-box',
+    transition: 'border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease',
+  },
+  authButton: {
+    width: '100%',
+    padding: '15px',
+    backgroundColor: THEME.primaryRed,
+    color: THEME.textPrimary,
+    border: `1px solid ${THEME.primaryRed}`,
+    borderRadius: '10px',
+    fontSize: '16px',
+    fontWeight: '800',
+    cursor: 'pointer',
+  },
+  secondaryButton: {
+    backgroundColor: THEME.cardBg,
+    color: THEME.primaryRed,
+    border: `1px solid ${THEME.redMedium}`,
+  },
+  timerText: {
+    fontSize: '54px',
+    fontWeight: '900',
+    textAlign: 'center',
+    margin: '8px 0 30px 0',
+    color: THEME.textPrimary,
+    letterSpacing: '0',
+    textShadow: '0 0 26px rgba(218, 41, 28, 0.42)',
+  },
+  topBar: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    padding: '20px',
+    alignItems: 'center',
+    borderBottom: `1px solid ${THEME.border}`,
+    backgroundColor: THEME.bgBlack,
+  },
+  mainBtn: {
+    width: '100%',
+    padding: '16px',
+    backgroundColor: THEME.primaryRed,
+    color: THEME.textPrimary,
+    borderRadius: '30px',
+    fontWeight: '800',
+    border: `1px solid ${THEME.primaryRed}`,
+    fontSize: '16px',
+    cursor: 'pointer',
+    boxShadow: '0 12px 24px rgba(218, 41, 28, 0.22)',
+  },
+  discardBtn: {
+    width: '100%',
+    padding: '16px',
+    backgroundColor: THEME.cardBg,
+    color: THEME.dangerRed,
+    borderRadius: '30px',
+    fontWeight: '800',
+    border: `1px solid ${THEME.dangerSoft}`,
+    fontSize: '16px',
+    cursor: 'pointer',
+  },
+  deleteBtn: {
+    backgroundColor: THEME.dangerSoft,
+    color: THEME.dangerRed,
+    border: `1px solid rgba(255, 69, 58, 0.24)`,
+    borderRadius: '8px',
+    padding: '8px 12px',
+    fontSize: '14px',
+    fontWeight: '800',
+    cursor: 'pointer',
+  },
+  calendarContainer: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    backgroundColor: THEME.bgDark,
+    padding: '15px',
+    borderRadius: '12px',
+    marginBottom: '20px',
+    border: `1px solid ${THEME.border}`,
+    boxShadow: THEME.shadow,
+  },
   calendarDay: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', width: '40px', height: '55px', borderRadius: '8px' },
-  historyCard: { backgroundColor: '#1C1C1E', padding: '20px', borderRadius: '12px', marginBottom: '15px' },
-  historyHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #2C2C2E', paddingBottom: '15px', marginBottom: '15px' },
-  
-  globalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 20px', backgroundColor: '#0A0A0A', borderBottom: '1px solid #1C1C1E', zIndex: 40 },
-  menuButton: { background: 'transparent', border: 'none', color: '#FFFFFF', fontSize: '28px', cursor: 'pointer', padding: 0 },
-  menuOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 200, display: 'flex', justifyContent: 'flex-end', backdropFilter: 'blur(4px)' },
-  menuContent: { backgroundColor: '#1C1C1E', width: '250px', height: '100%', padding: '20px 0', display: 'flex', flexDirection: 'column', borderLeft: '1px solid #2C2C2E', boxShadow: '-5px 0 15px rgba(0,0,0,0.5)' },
-  closeMenuBtn: { fontSize: '24px', color: '#8E8E93', cursor: 'pointer', paddingRight: '20px' },
-  menuItem: { background: 'transparent', border: 'none', fontSize: '22px', fontWeight: 'bold', textAlign: 'left', cursor: 'pointer', padding: '15px 20px', transition: 'all 0.2s', width: '100%' },
-  
-  historyExerciseBlock: { marginTop: '10px', backgroundColor: '#0A0A0A', borderRadius: '8px', padding: '12px' },
-  historyExerciseTitle: { margin: '0 0 10px 0', fontSize: '16px', fontWeight: 'bold', color: '#0A84FF' },
-  historySetRow: { display: 'flex', alignItems: 'center', fontSize: '14px', color: '#8E8E93', padding: '6px 0' },
-  dottedLine: { flex: 1, borderBottom: '2px dotted #2C2C2E', margin: '0 15px', transform: 'translateY(-3px)' },
+  historyCard: {
+    backgroundColor: THEME.cardBg,
+    padding: '20px',
+    borderRadius: '12px',
+    marginBottom: '15px',
+    border: `1px solid ${THEME.border}`,
+    boxShadow: THEME.shadow,
+  },
+  historyHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    borderBottom: `1px solid ${THEME.border}`,
+    paddingBottom: '15px',
+    marginBottom: '15px',
+    gap: '16px',
+  },
 
-  exerciseBlock: { padding: '0 20px 20px 20px', borderBottom: '1px solid #1C1C1E', marginBottom: '20px' },
+  globalHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '15px 20px',
+    backgroundColor: THEME.bgBlack,
+    borderBottom: `1px solid ${THEME.border}`,
+    zIndex: 40,
+    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.3)',
+  },
+  brandTitle: {
+    margin: 0,
+    fontSize: '20px',
+    color: THEME.textPrimary,
+    fontWeight: '900',
+    letterSpacing: '0',
+    display: 'inline-flex',
+    flexDirection: 'column',
+    lineHeight: 1.05,
+    gap: '5px',
+  },
+  brandMarker: {
+    width: '48px',
+    height: '3px',
+    borderRadius: '999px',
+    backgroundColor: THEME.primaryRed,
+    boxShadow: '0 0 14px rgba(218, 41, 28, 0.55)',
+  },
+  menuButton: { background: 'transparent', border: 'none', color: THEME.textPrimary, fontSize: '28px', cursor: 'pointer', padding: 0 },
+  menuOverlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: THEME.overlay,
+    zIndex: 200,
+    display: 'flex',
+    justifyContent: 'flex-end',
+    backdropFilter: 'blur(5px)',
+  },
+  menuContent: {
+    backgroundColor: THEME.cardBg,
+    width: '270px',
+    height: '100%',
+    padding: '22px 0',
+    display: 'flex',
+    flexDirection: 'column',
+    borderLeft: `1px solid ${THEME.border}`,
+    boxShadow: '-18px 0 36px rgba(0, 0, 0, 0.46)',
+  },
+  closeMenuBtn: { fontSize: '24px', color: THEME.textSecondary, cursor: 'pointer' },
+  menuItem: { background: 'transparent', border: 'none', fontSize: '22px', fontWeight: '800', textAlign: 'left', cursor: 'pointer', padding: '15px 20px', transition: 'all 0.2s', width: '100%' },
+
+  pageTitle: {
+    fontSize: '26px',
+    margin: '0 0 20px 0',
+    textAlign: 'center',
+    color: THEME.textPrimary,
+    fontWeight: '900',
+    letterSpacing: '0',
+  },
+  workoutHome: {
+    padding: '24px 16px 34px 16px',
+  },
+  startPanel: {
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: '30px 10px 26px 10px',
+    textAlign: 'center',
+  },
+  eyebrow: {
+    color: THEME.accentGold,
+    fontSize: '12px',
+    fontWeight: '900',
+    letterSpacing: '1.4px',
+    margin: '0 0 10px 0',
+    textTransform: 'uppercase',
+  },
+  dashboardCard: {
+    backgroundColor: THEME.cardBg,
+    padding: '22px',
+    borderRadius: '12px',
+    marginBottom: '30px',
+    textAlign: 'center',
+    border: `1px solid ${THEME.border}`,
+    boxShadow: THEME.shadow,
+  },
+  sectionCard: {
+    backgroundColor: THEME.cardBg,
+    padding: '20px',
+    borderRadius: '12px',
+    marginBottom: '30px',
+    border: `1px solid ${THEME.border}`,
+    boxShadow: THEME.shadow,
+  },
+  inputLabel: { fontSize: '12px', color: THEME.textSecondary, fontWeight: '700' },
+  formLabel: { display: 'block', margin: '0 0 8px 0', color: THEME.textPrimary, fontSize: '14px', fontWeight: '800' },
+  macroSummaryCard: {
+    marginTop: '20px',
+    padding: '16px',
+    backgroundColor: THEME.bgDark,
+    borderRadius: '10px',
+    border: `1px solid rgba(242, 201, 76, 0.38)`,
+  },
+  resultsPanel: {
+    backgroundColor: THEME.cardBg,
+    borderRadius: '12px',
+    padding: '10px',
+    maxHeight: '60vh',
+    overflowY: 'auto',
+    border: `1px solid ${THEME.border}`,
+    boxShadow: THEME.shadow,
+  },
+  foodResultRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '14px 2px',
+    borderBottom: `1px solid ${THEME.border}`,
+  },
+  smallSecondaryBtn: {
+    backgroundColor: THEME.bgDark,
+    color: THEME.primaryRed,
+    border: `1px solid ${THEME.redMedium}`,
+    borderRadius: '8px',
+    padding: '6px 11px',
+    fontWeight: '800',
+    cursor: 'pointer',
+  },
+
+  templateSection: {
+    marginTop: '8px',
+  },
+  templateSectionHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: '12px',
+    marginBottom: '14px',
+  },
+  templateSectionTitle: {
+    margin: 0,
+    color: THEME.textPrimary,
+    fontSize: '22px',
+    fontWeight: '900',
+  },
+  createTemplateBtn: {
+    backgroundColor: THEME.cardBg,
+    color: THEME.primaryRed,
+    border: `1px solid ${THEME.redMedium}`,
+    borderRadius: '10px',
+    padding: '11px 13px',
+    fontSize: '14px',
+    fontWeight: '800',
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  templateErrorText: {
+    margin: '0 0 12px 0',
+    color: THEME.dangerRed,
+    fontSize: '13px',
+    fontWeight: '800',
+  },
+  templateEmptyState: {
+    backgroundColor: THEME.cardBg,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '12px',
+    padding: '18px',
+    boxShadow: THEME.shadow,
+  },
+  templateCardList: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
+    gap: '12px',
+  },
+  templateCard: {
+    backgroundColor: THEME.cardBg,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '12px',
+    padding: '16px',
+    boxShadow: THEME.shadow,
+  },
+  templateCardHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '12px',
+  },
+  templateCardTitle: {
+    margin: 0,
+    color: THEME.textPrimary,
+    fontSize: '18px',
+    fontWeight: '900',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  templateExerciseCount: {
+    margin: '6px 0 0 0',
+    color: THEME.accentGold,
+    fontSize: '13px',
+    fontWeight: '800',
+  },
+  templateNotes: {
+    margin: '12px 0 0 0',
+    color: THEME.textSecondary,
+    fontSize: '14px',
+    lineHeight: 1.45,
+  },
+  templateCardActions: {
+    display: 'grid',
+    gridTemplateColumns: '1.2fr 1fr 1fr',
+    gap: '8px',
+    marginTop: '16px',
+  },
+  templateStartBtn: {
+    backgroundColor: THEME.primaryRed,
+    color: THEME.textPrimary,
+    border: `1px solid ${THEME.primaryRed}`,
+    borderRadius: '9px',
+    padding: '10px 8px',
+    fontSize: '13px',
+    fontWeight: '900',
+    cursor: 'pointer',
+  },
+  templateActionBtn: {
+    backgroundColor: THEME.bgDark,
+    color: THEME.textSecondary,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '9px',
+    padding: '10px 8px',
+    fontSize: '13px',
+    fontWeight: '800',
+    cursor: 'pointer',
+  },
+  templateDeleteBtn: {
+    backgroundColor: THEME.dangerSoft,
+    color: THEME.dangerRed,
+    border: `1px solid rgba(255, 69, 58, 0.24)`,
+    borderRadius: '9px',
+    padding: '10px 8px',
+    fontSize: '13px',
+    fontWeight: '800',
+    cursor: 'pointer',
+  },
+  templateModalBody: {
+    padding: '22px 20px',
+    overflowY: 'auto',
+    flex: 1,
+  },
+  templateLibraryPanel: {
+    backgroundColor: THEME.cardBg,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '12px',
+    padding: '14px',
+    marginBottom: '18px',
+  },
+  templateLibraryHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: '10px',
+  },
+  templateSubTitle: {
+    margin: 0,
+    color: THEME.textPrimary,
+    fontSize: '16px',
+    fontWeight: '900',
+  },
+  templateLibraryList: {
+    maxHeight: '290px',
+    overflowY: 'auto',
+    paddingRight: '4px',
+  },
+  templateLibraryGroup: {
+    marginBottom: '14px',
+  },
+  templateLibraryGroupTitle: {
+    margin: '0 0 8px 0',
+    color: THEME.accentGold,
+    fontSize: '12px',
+    fontWeight: '900',
+    letterSpacing: '1px',
+    textTransform: 'uppercase',
+  },
+  templateLibraryRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '10px 0',
+    borderBottom: `1px solid ${THEME.border}`,
+  },
+  templateLibraryName: {
+    margin: 0,
+    color: THEME.textPrimary,
+    fontSize: '14px',
+    fontWeight: '800',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  templateLibraryMeta: {
+    margin: '3px 0 0 0',
+    color: THEME.textSecondary,
+    fontSize: '11px',
+  },
+  templateLibraryAddBtn: {
+    backgroundColor: THEME.redSoft,
+    color: THEME.primaryRed,
+    border: `1px solid ${THEME.redMedium}`,
+    borderRadius: '8px',
+    padding: '7px 10px',
+    fontSize: '12px',
+    fontWeight: '900',
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  templateLibraryEmpty: {
+    margin: '8px 0',
+    color: THEME.textSecondary,
+    textAlign: 'center',
+    fontSize: '14px',
+  },
+  templateExerciseEditorHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '12px',
+    gap: '12px',
+  },
+  templateExerciseEditorList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    marginBottom: '16px',
+  },
+  templateExerciseEditorCard: {
+    backgroundColor: THEME.cardBg,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '12px',
+    padding: '14px',
+  },
+  templateExerciseEditorTop: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '12px',
+    marginBottom: '12px',
+  },
+  templateExerciseEditorTitle: {
+    margin: 0,
+    color: THEME.textPrimary,
+    fontSize: '16px',
+    fontWeight: '900',
+  },
+  templateExerciseEditorGroup: {
+    margin: '4px 0 0 0',
+    color: THEME.accentGold,
+    fontSize: '12px',
+    fontWeight: '800',
+  },
+  templateRemoveBtn: {
+    backgroundColor: THEME.dangerSoft,
+    color: THEME.dangerRed,
+    border: `1px solid rgba(255, 69, 58, 0.24)`,
+    borderRadius: '8px',
+    padding: '8px 10px',
+    fontSize: '12px',
+    fontWeight: '800',
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  templateExerciseFields: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))',
+    gap: '10px',
+  },
+  templateModalActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: '10px',
+    marginTop: '18px',
+  },
+
+  historyExerciseBlock: { marginTop: '10px', backgroundColor: THEME.bgDark, borderRadius: '10px', padding: '12px', border: `1px solid ${THEME.border}` },
+  historyExerciseTitle: { margin: '0 0 10px 0', fontSize: '16px', fontWeight: '800', color: THEME.primaryRed },
+  historySetRow: { display: 'flex', alignItems: 'center', fontSize: '14px', color: THEME.textSecondary, padding: '6px 0' },
+  dottedLine: { flex: 1, borderBottom: `2px dotted ${THEME.border}`, margin: '0 15px', transform: 'translateY(-3px)' },
+
+  exerciseHistoryOverlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: THEME.overlay,
+    zIndex: 180,
+    display: 'flex',
+    alignItems: 'stretch',
+    justifyContent: 'center',
+  },
+  exerciseHistoryModal: {
+    width: '100%',
+    maxWidth: '720px',
+    height: '100%',
+    backgroundColor: THEME.bgBlack,
+    display: 'flex',
+    flexDirection: 'column',
+    borderLeft: `1px solid ${THEME.border}`,
+    borderRight: `1px solid ${THEME.border}`,
+  },
+  exerciseHistoryModalBody: {
+    flex: 1,
+    overflowY: 'auto',
+    padding: '20px',
+  },
+  exerciseHistoryStatsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+    gap: '12px',
+    marginBottom: '24px',
+  },
+  exerciseHistoryStatCard: {
+    backgroundColor: THEME.cardBg,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '10px',
+    padding: '14px',
+  },
+  exerciseHistoryStatLabel: {
+    display: 'block',
+    color: THEME.textSecondary,
+    fontSize: '12px',
+    fontWeight: '800',
+    marginBottom: '7px',
+  },
+  exerciseHistoryStatValue: {
+    display: 'block',
+    color: THEME.textPrimary,
+    fontSize: '18px',
+    fontWeight: '900',
+    lineHeight: 1.25,
+    overflowWrap: 'anywhere',
+  },
+  exerciseHistorySectionTitle: {
+    margin: '0 0 12px 0',
+    color: THEME.textPrimary,
+    fontSize: '17px',
+    fontWeight: '900',
+  },
+  exerciseHistorySessionList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '14px',
+    paddingBottom: '30px',
+  },
+  exerciseHistorySessionCard: {
+    backgroundColor: THEME.cardBg,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '12px',
+    padding: '15px',
+    boxShadow: THEME.shadow,
+  },
+  exerciseHistorySessionHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '12px',
+    paddingBottom: '12px',
+    marginBottom: '8px',
+    borderBottom: `1px solid ${THEME.border}`,
+  },
+  exerciseHistorySessionDate: {
+    margin: 0,
+    color: THEME.textPrimary,
+    fontSize: '16px',
+    fontWeight: '900',
+  },
+  exerciseHistoryExerciseName: {
+    margin: '4px 0 0 0',
+    color: THEME.primaryRed,
+    fontSize: '13px',
+    fontWeight: '800',
+  },
+  exerciseHistoryDuration: {
+    color: THEME.accentGold,
+    fontSize: '12px',
+    fontWeight: '900',
+    flexShrink: 0,
+  },
+  exerciseHistorySetRow: {
+    display: 'grid',
+    gridTemplateColumns: '66px minmax(0, 1fr)',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '8px 0',
+    color: THEME.textSecondary,
+    fontSize: '14px',
+  },
+  exerciseHistorySetLabel: {
+    color: THEME.textPrimary,
+    fontWeight: '900',
+  },
+  exerciseHistorySetValue: {
+    color: THEME.textSecondary,
+    fontWeight: '700',
+    overflowWrap: 'anywhere',
+  },
+  exerciseHistoryCompletedBadge: {
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '999px',
+    padding: '4px 8px',
+    fontSize: '11px',
+    fontWeight: '900',
+    whiteSpace: 'nowrap',
+  },
+  exerciseHistoryEmptyState: {
+    marginTop: '44px',
+    backgroundColor: THEME.cardBg,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '12px',
+    padding: '22px',
+    textAlign: 'center',
+    boxShadow: THEME.shadow,
+  },
+  exerciseHistoryEmptyTitle: {
+    margin: '0 0 8px 0',
+    color: THEME.textPrimary,
+    fontSize: '16px',
+    fontWeight: '900',
+  },
+  exerciseHistoryEmptyText: {
+    margin: 0,
+    color: THEME.textSecondary,
+    fontSize: '14px',
+    lineHeight: 1.45,
+  },
+
+  exerciseBlock: {
+    padding: '16px',
+    margin: '0 16px 18px 16px',
+    backgroundColor: THEME.cardBg,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '12px',
+    boxShadow: THEME.shadow,
+  },
   exerciseHeader: { marginBottom: '15px' },
-  exerciseName: { margin: '0', fontSize: '18px', fontWeight: 'bold' },
-  tableHeader: { display: 'flex', color: '#8E8E93', fontSize: '13px', fontWeight: '600', marginBottom: '10px' },
-  setRow: { display: 'flex', alignItems: 'center', marginBottom: '6px', padding: '4px 0', borderRadius: '8px' },
-  setCol: { flex: 0.5, textAlign: 'center', fontWeight: 'bold', color: '#8E8E93' },
-  prevCol: { flex: 1, textAlign: 'center', color: '#8E8E93', fontSize: '14px' },
+  exerciseName: { margin: '0', fontSize: '18px', fontWeight: '900', color: THEME.textPrimary },
+  tableHeader: { display: 'flex', color: THEME.textSecondary, fontSize: '13px', fontWeight: '700', marginBottom: '10px' },
+  setRow: { display: 'flex', alignItems: 'center', marginBottom: '6px', padding: '5px 0', borderRadius: '8px', border: '1px solid transparent', transition: 'background-color 0.2s ease, border-color 0.2s ease' },
+  setCol: { flex: 0.5, textAlign: 'center', fontWeight: '800', color: THEME.textSecondary },
+  prevCol: { flex: 1, textAlign: 'center', color: THEME.textSecondary, fontSize: '14px' },
   inputColTitle: { flex: 1, textAlign: 'center' },
   inputCol: { flex: 1, margin: '0 5px' },
   checkCol: { flex: 0.5, display: 'flex', justifyContent: 'center' },
-  inputField: { width: '100%', backgroundColor: '#1C1C1E', color: '#FFFFFF', border: 'none', borderRadius: '6px', padding: '10px 0', textAlign: 'center', fontSize: '16px', fontWeight: 'bold', outline: 'none' },
-  checkButton: { width: '32px', height: '32px', borderRadius: '50%', border: 'none', display: 'flex', justifyContent: 'center', alignItems: 'center', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold' },
-  addSetText: { color: '#8E8E93', fontSize: '15px', fontWeight: '600', cursor: 'pointer', padding: '10px' },
-  modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000000', zIndex: 100, display: 'flex', flexDirection: 'column' },
-  modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', borderBottom: '1px solid #1C1C1E', backgroundColor: '#0A0A0A' },
-  exerciseListItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 0', borderBottom: '1px solid #1C1C1E', cursor: 'pointer' },
-  navArrow: { backgroundColor: 'transparent', color: '#0A84FF', border: 'none', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', transition: 'opacity 0.2s' }
+  inputField: {
+    width: '100%',
+    backgroundColor: THEME.bgDark,
+    color: THEME.textPrimary,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '8px',
+    padding: '10px 0',
+    textAlign: 'center',
+    fontSize: '16px',
+    fontWeight: '800',
+    outline: 'none',
+    boxSizing: 'border-box',
+  },
+  checkButton: { width: '32px', height: '32px', borderRadius: '50%', border: `1px solid ${THEME.border}`, display: 'flex', justifyContent: 'center', alignItems: 'center', cursor: 'pointer', fontSize: '14px', fontWeight: '900' },
+  addSetText: { color: THEME.accentGold, fontSize: '15px', fontWeight: '800', cursor: 'pointer', padding: '10px' },
+  modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: THEME.bgBlack, zIndex: 100, display: 'flex', flexDirection: 'column' },
+  modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', borderBottom: `1px solid ${THEME.border}`, backgroundColor: THEME.bgDark },
+  modalClose: { fontSize: '24px', cursor: 'pointer', color: THEME.textSecondary },
+  exercisePickerShell: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 },
+  exerciseSearchPanel: { padding: '20px', borderBottom: `1px solid ${THEME.border}`, display: 'flex', alignItems: 'center', gap: '10px' },
+  exercisePickerList: { overflowY: 'auto', paddingBottom: '50px', flex: 1 },
+  exercisePickerGroup: { padding: '10px 20px' },
+  exercisePickerGroupTitle: { color: THEME.accentGold, fontSize: '14px', textTransform: 'uppercase', letterSpacing: '1px', marginTop: '10px' },
+  exercisePickerPrimary: { display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 },
+  exercisePickerName: { margin: 0, fontSize: '16px', overflow: 'hidden', textOverflow: 'ellipsis' },
+  exercisePickerHighlightedRow: { backgroundColor: THEME.goldSoft, borderRadius: '10px', paddingLeft: '8px', paddingRight: '8px' },
+  templatePickerShell: { display: 'flex', flexDirection: 'column', minHeight: 0 },
+  templatePickerSearchPanel: { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' },
+  templateExercisePickerList: { maxHeight: '290px', overflowY: 'auto', paddingRight: '4px' },
+  templatePickerEmptyState: { padding: '18px', backgroundColor: THEME.bgDark, border: `1px solid ${THEME.border}`, borderRadius: '10px', textAlign: 'center' },
+  searchResultLabel: { margin: '18px 20px 4px 20px', color: THEME.textSecondary, fontSize: '13px', fontWeight: '800' },
+  emptyExerciseState: { margin: '44px 20px 0 20px', padding: '22px', backgroundColor: THEME.cardBg, border: `1px solid ${THEME.border}`, borderRadius: '12px', textAlign: 'center', boxShadow: THEME.shadow },
+  createExerciseIconBtn: { width: '50px', height: '50px', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: THEME.primaryRed, color: THEME.textPrimary, border: `1px solid ${THEME.primaryRed}`, borderRadius: '12px', fontSize: '28px', fontWeight: '900', cursor: 'pointer', boxShadow: '0 12px 24px rgba(218, 41, 28, 0.22)' },
+  emptyCreateExerciseBtn: { width: '48px', height: '48px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', backgroundColor: THEME.primaryRed, color: THEME.textPrimary, border: `1px solid ${THEME.primaryRed}`, borderRadius: '50%', fontSize: '28px', fontWeight: '900', cursor: 'pointer' },
+  exerciseListItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', padding: '15px 0', borderBottom: `1px solid ${THEME.border}`, cursor: 'pointer', transition: 'background-color 0.2s ease, transform 0.2s ease' },
+  exerciseListActions: { display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 },
+  exerciseHistoryBtn: { backgroundColor: THEME.bgDark, color: THEME.textSecondary, border: `1px solid ${THEME.border}`, borderRadius: '8px', padding: '6px 9px', fontSize: '12px', fontWeight: '800', cursor: 'pointer' },
+  addExerciseIconBtn: { width: '34px', height: '34px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: THEME.redSoft, color: THEME.primaryRed, border: `1px solid ${THEME.redMedium}`, borderRadius: '50%', fontSize: '22px', fontWeight: '800', cursor: 'pointer' },
+  createExerciseModalBody: { padding: '22px 20px', overflowY: 'auto', flex: 1 },
+  textAreaField: { width: '100%', minHeight: '110px', padding: '14px', marginBottom: '15px', backgroundColor: THEME.bgDark, color: THEME.textPrimary, border: `1px solid ${THEME.border}`, borderRadius: '10px', fontSize: '16px', outline: 'none', resize: 'vertical', fontFamily: 'inherit' },
+  formError: { margin: '0 0 15px 0', color: THEME.dangerRed, fontSize: '13px', fontWeight: '800' },
+  createExerciseActions: { display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' },
+  cancelBtn: { flex: 1, padding: '14px', backgroundColor: THEME.cardBg, color: THEME.textSecondary, border: `1px solid ${THEME.border}`, borderRadius: '10px', fontSize: '15px', fontWeight: '800', cursor: 'pointer' },
+  saveExerciseBtn: { flex: 1, padding: '14px', backgroundColor: THEME.primaryRed, color: THEME.textPrimary, border: `1px solid ${THEME.primaryRed}`, borderRadius: '10px', fontSize: '15px', fontWeight: '800', cursor: 'pointer' },
+  seasoningGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', backgroundColor: THEME.cardBg, padding: '15px', borderRadius: '10px', border: `1px solid ${THEME.border}`, marginBottom: '20px' },
+  navArrow: { backgroundColor: 'transparent', color: THEME.primaryRed, border: 'none', fontSize: '14px', fontWeight: '800', cursor: 'pointer', transition: 'opacity 0.2s, color 0.2s' }
 };
