@@ -1,4 +1,5 @@
 const IMAGE_PARSER_ENDPOINT = '/api/parse-workout-image';
+const PARSER_NOT_CONFIGURED_MESSAGE = 'Image parser service is not configured.';
 
 const mockParsedTemplate = {
   templateName: 'BUỔI 3: ANTERIOR B',
@@ -92,6 +93,50 @@ const getMockParsedTemplate = async () => {
   return mockParsedTemplate;
 };
 
+const getParserEndpoints = () => {
+  const endpoints = [IMAGE_PARSER_ENDPOINT];
+
+  if (import.meta.env.DEV && typeof window !== 'undefined') {
+    const { protocol, hostname, port } = window.location;
+    const portSegment = port ? `:${port}` : '';
+    const hostAliases = hostname === 'localhost'
+      ? ['127.0.0.1']
+      : hostname === '127.0.0.1'
+        ? ['localhost']
+        : [];
+
+    hostAliases.forEach(host => {
+      endpoints.push(`${protocol}//${host}${portSegment}${IMAGE_PARSER_ENDPOINT}`);
+    });
+  }
+
+  return [...new Set(endpoints)];
+};
+
+const parseEndpointResponse = async (response) => {
+  const contentType = response.headers.get('content-type') || '';
+
+  if (!response.ok) {
+    if (response.status === 404 || !contentType.includes('application/json')) {
+      throw new Error(PARSER_NOT_CONFIGURED_MESSAGE);
+    }
+
+    const errorBody = await response.json().catch(() => ({}));
+    throw new Error(errorBody.error || 'Could not detect a workout plan from this image. Try a clearer image or enter the template manually.');
+  }
+
+  if (!contentType.includes('application/json')) {
+    throw new Error(PARSER_NOT_CONFIGURED_MESSAGE);
+  }
+
+  const parsed = await response.json();
+  if (!Array.isArray(parsed.exercises)) {
+    throw new Error('Could not detect a workout plan from this image. Try a clearer image or enter the template manually.');
+  }
+
+  return parsed;
+};
+
 export const parseWorkoutTemplateImage = async (imageBase64) => {
   if (!imageBase64) {
     throw new Error('Please upload an image before parsing.');
@@ -101,42 +146,34 @@ export const parseWorkoutTemplateImage = async (imageBase64) => {
     return getMockParsedTemplate();
   }
 
-  let response;
-  try {
-    response = await fetch(IMAGE_PARSER_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageBase64 }),
-    });
-  } catch {
-    if (canFallbackToMockParser()) return getMockParsedTemplate();
-    throw new Error('Image parser service is not configured.');
-  }
+  const requestBody = JSON.stringify({ imageBase64 });
+  let unavailableError = null;
 
-  const contentType = response.headers.get('content-type') || '';
-  if (!response.ok) {
-    if (response.status === 404 && canFallbackToMockParser()) return getMockParsedTemplate();
+  for (const endpoint of getParserEndpoints()) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: requestBody,
+      });
 
-    if (contentType.includes('application/json')) {
-      const errorBody = await response.json().catch(() => ({}));
-      if (errorBody.error) throw new Error(errorBody.error);
+      return await parseEndpointResponse(response);
+    } catch (error) {
+      const isUnavailable = (
+        error.message === PARSER_NOT_CONFIGURED_MESSAGE ||
+        error instanceof TypeError ||
+        /failed to fetch|networkerror|load failed/i.test(error.message || '')
+      );
+
+      if (!isUnavailable) {
+        throw error;
+      }
+
+      unavailableError = new Error(PARSER_NOT_CONFIGURED_MESSAGE);
     }
-
-    throw new Error(response.status === 404
-      ? 'Image parser service is not configured.'
-      : 'Could not detect a workout plan from this image. Try a clearer image or enter the template manually.');
   }
 
-  if (!contentType.includes('application/json')) {
-    if (canFallbackToMockParser()) return getMockParsedTemplate();
+  if (canFallbackToMockParser()) return getMockParsedTemplate();
 
-    throw new Error('Image parser service is not configured.');
-  }
-
-  const parsed = await response.json();
-  if (!Array.isArray(parsed.exercises)) {
-    throw new Error('Could not detect a workout plan from this image. Try a clearer image or enter the template manually.');
-  }
-
-  return parsed;
+  throw unavailableError || new Error(PARSER_NOT_CONFIGURED_MESSAGE);
 };

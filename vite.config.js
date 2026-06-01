@@ -50,6 +50,9 @@ const readRequestJson = (req) => new Promise((resolve, reject) => {
 const sendJson = (res, statusCode, payload) => {
   res.statusCode = statusCode
   res.setHeader('Content-Type', 'application/json')
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
   res.end(JSON.stringify(payload))
 }
 
@@ -57,6 +60,11 @@ const workoutImageParserPlugin = () => ({
   name: 'local-workout-image-parser',
   configureServer(server) {
     server.middlewares.use('/api/parse-workout-image', async (req, res) => {
+      if (req.method === 'OPTIONS') {
+        sendJson(res, 204, {})
+        return
+      }
+
       if (req.method !== 'POST') {
         sendJson(res, 405, { error: 'Method not allowed.' })
         return
