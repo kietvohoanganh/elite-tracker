@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "firebase/auth";
 import { getFirestore, collection, query, orderBy, onSnapshot, addDoc, deleteDoc, doc, setDoc, getDoc } from "firebase/firestore";
@@ -119,6 +119,10 @@ const getConfidenceLabel = (confidence = 0) => {
   return 'Low';
 };
 
+const dedupeById = (items = []) => (
+  Array.from(new Map(items.map(item => [item.id, item])).values())
+);
+
 // 4. SEASONING DATABASE 
 const SEASONING_DATABASE = [
   { key: 'soySauce', label: 'Soy Sauce', kcal: 5 },
@@ -179,7 +183,7 @@ export default function App() {
       const customExercisesRef = collection(db, "users", user.uid, "custom_exercises");
       const unsubscribe = onSnapshot(customExercisesRef, (snapshot) => {
         const exercisesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setCustomExercises(exercisesData);
+        setCustomExercises(dedupeById(exercisesData));
       });
       return () => unsubscribe();
     }
@@ -190,7 +194,7 @@ export default function App() {
       const templatesQuery = query(collection(db, "users", user.uid, "workout_templates"), orderBy("updatedAt", "desc"));
       const unsubscribe = onSnapshot(templatesQuery, (snapshot) => {
         const templatesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setWorkoutTemplates(templatesData);
+        setWorkoutTemplates(dedupeById(templatesData));
         setTemplatesError('');
       }, () => {
         setTemplatesError('Templates could not be loaded right now.');
@@ -224,6 +228,10 @@ export default function App() {
   const [importedTemplateExercises, setImportedTemplateExercises] = useState([]);
   const [importRawText, setImportRawText] = useState('');
   const [importExerciseSearch, setImportExerciseSearch] = useState('');
+  const importParseRequestIdRef = useRef(0);
+  const isSavingCustomExerciseRef = useRef(false);
+  const isSavingTemplateRef = useRef(false);
+  const isSavingImportedTemplateRef = useRef(false);
   const [currentTemplateId, setCurrentTemplateId] = useState(null);
   const [currentTemplateName, setCurrentTemplateName] = useState('');
   const [seconds, setSeconds] = useState(0);
@@ -268,6 +276,9 @@ export default function App() {
   const [createExerciseError, setCreateExerciseError] = useState('');
   const [createExerciseContext, setCreateExerciseContext] = useState('workout');
   const [lastCreatedExerciseId, setLastCreatedExerciseId] = useState('');
+  const [isSavingCustomExercise, setIsSavingCustomExercise] = useState(false);
+  const [isSavingTemplate, setIsSavingTemplate] = useState(false);
+  const [isSavingImportedTemplate, setIsSavingImportedTemplate] = useState(false);
 
   const prevData = useMemo(() => {
     if (!isWorkoutActive || workoutHistory.length === 0) return {};
@@ -703,7 +714,7 @@ export default function App() {
   };
 
   const saveCustomExercise = async () => {
-    if (!user) return;
+    if (!user || isSavingCustomExerciseRef.current) return;
 
     const exerciseName = newExerciseName.trim();
     const muscleGroup = newExerciseMuscleGroup.trim();
@@ -740,10 +751,11 @@ export default function App() {
 
     if (notes) exerciseDoc.notes = notes;
 
+    isSavingCustomExerciseRef.current = true;
+    setIsSavingCustomExercise(true);
+
     try {
       const docRef = await addDoc(collection(db, "users", user.uid, "custom_exercises"), exerciseDoc);
-      const createdExercise = { id: docRef.id, ...exerciseDoc };
-      setCustomExercises(prev => [...prev, createdExercise]);
       setLastCreatedExerciseId(docRef.id);
 
       if (createExerciseContext === 'template') {
@@ -763,6 +775,9 @@ export default function App() {
       setCreateExerciseError('');
     } catch (error) {
       setCreateExerciseError("Error creating exercise: " + error.message);
+    } finally {
+      isSavingCustomExerciseRef.current = false;
+      setIsSavingCustomExercise(false);
     }
   };
 
@@ -827,6 +842,17 @@ export default function App() {
     const file = event.target.files?.[0];
     if (!file) return;
 
+    importParseRequestIdRef.current += 1;
+    setImportImagePreview('');
+    setImportImageBase64('');
+    setImportImageFileName('');
+    setIsParsingTemplateImage(false);
+    setImportedTemplateName('');
+    setImportedTemplateExercises([]);
+    setImportRawText('');
+    setHasParsedImport(false);
+    setImportTemplateError('');
+
     const acceptedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
     if (!acceptedTypes.includes(file.type)) {
       setImportTemplateError('Please upload a PNG, JPG, JPEG, or WEBP image.');
@@ -844,16 +870,12 @@ export default function App() {
       setImportImagePreview(dataUrl);
       setImportImageBase64(dataUrl.split(',')[1] || '');
       setImportImageFileName(file.name);
-      setImportedTemplateName('');
-      setImportedTemplateExercises([]);
-      setImportRawText('');
-      setHasParsedImport(false);
-      setImportTemplateError('');
     };
     reader.onerror = () => {
       setImportTemplateError('Could not read this image. Try a clearer image or enter the template manually.');
     };
     reader.readAsDataURL(file);
+    event.target.value = '';
   };
 
   const parseImportedTemplateImage = async () => {
@@ -862,11 +884,21 @@ export default function App() {
       return;
     }
 
+    const requestId = importParseRequestIdRef.current + 1;
+    importParseRequestIdRef.current = requestId;
+    const imageBase64ToParse = importImageBase64;
+
     setIsParsingTemplateImage(true);
     setImportTemplateError('');
+    setImportedTemplateName('');
+    setImportedTemplateExercises([]);
+    setImportRawText('');
+    setHasParsedImport(false);
 
     try {
-      const parsedTemplate = await parseWorkoutTemplateImage(importImageBase64);
+      const parsedTemplate = await parseWorkoutTemplateImage(imageBase64ToParse);
+      if (importParseRequestIdRef.current !== requestId) return;
+
       const parsedExercises = Array.isArray(parsedTemplate.exercises) ? parsedTemplate.exercises : [];
       const mappedExercises = parsedExercises
         .map(buildImportedExerciseReview)
@@ -877,11 +909,15 @@ export default function App() {
       setImportRawText(parsedTemplate.rawText || '');
       setHasParsedImport(true);
     } catch (error) {
+      if (importParseRequestIdRef.current !== requestId) return;
+
       setHasParsedImport(false);
       setImportedTemplateExercises([]);
       setImportTemplateError(error.message || 'Could not detect a workout plan from this image. Try a clearer image or enter the template manually.');
     } finally {
-      setIsParsingTemplateImage(false);
+      if (importParseRequestIdRef.current === requestId) {
+        setIsParsingTemplateImage(false);
+      }
     }
   };
 
@@ -925,7 +961,7 @@ export default function App() {
   };
 
   const saveImportedTemplate = async () => {
-    if (!user) return;
+    if (!user || isSavingImportedTemplateRef.current) return;
 
     const templateNameValue = importedTemplateName.trim();
     if (!templateNameValue) {
@@ -951,8 +987,11 @@ export default function App() {
 
     const now = Date.now();
     const savedCustomExerciseIds = {};
-    const customExerciseDocs = [];
+    let lastCustomExerciseId = '';
     const identityKey = (exercise) => `${exercise.muscleGroup}|${exercise.exerciseName.toLowerCase()}`;
+
+    isSavingImportedTemplateRef.current = true;
+    setIsSavingImportedTemplate(true);
 
     try {
       if (shouldSaveNewExercises) {
@@ -977,12 +1016,11 @@ export default function App() {
 
           const docRef = await addDoc(collection(db, "users", user.uid, "custom_exercises"), exerciseDoc);
           savedCustomExerciseIds[identityKey(exercise)] = docRef.id;
-          customExerciseDocs.push({ id: docRef.id, ...exerciseDoc });
+          lastCustomExerciseId = docRef.id;
         }
 
-        if (customExerciseDocs.length > 0) {
-          setCustomExercises(prev => [...prev, ...customExerciseDocs]);
-          setLastCreatedExerciseId(customExerciseDocs[customExerciseDocs.length - 1].id);
+        if (lastCustomExerciseId) {
+          setLastCreatedExerciseId(lastCustomExerciseId);
         }
       }
 
@@ -1012,11 +1050,13 @@ export default function App() {
 
       if (importRawText.trim()) templateDoc.rawImportText = importRawText.trim();
 
-      const docRef = await addDoc(collection(db, "users", user.uid, "workout_templates"), templateDoc);
-      setWorkoutTemplates(prev => [{ id: docRef.id, ...templateDoc }, ...prev]);
+      await addDoc(collection(db, "users", user.uid, "workout_templates"), templateDoc);
       closeImportTemplateModal();
     } catch (error) {
       setImportTemplateError("Error saving imported template: " + error.message);
+    } finally {
+      isSavingImportedTemplateRef.current = false;
+      setIsSavingImportedTemplate(false);
     }
   };
 
@@ -1103,7 +1143,7 @@ export default function App() {
   };
 
   const saveWorkoutTemplate = async () => {
-    if (!user) return;
+    if (!user || isSavingTemplateRef.current) return;
 
     const normalizedExercises = templateExercises.map(normalizeTemplateExercise);
     const validation = validateTemplate({
@@ -1128,20 +1168,22 @@ export default function App() {
 
     if (notes) templateDoc.notes = notes;
 
+    isSavingTemplateRef.current = true;
+    setIsSavingTemplate(true);
+
     try {
       if (editingTemplateId) {
         await setDoc(doc(db, "users", user.uid, "workout_templates", editingTemplateId), templateDoc);
-        setWorkoutTemplates(prev => prev
-          .map(template => template.id === editingTemplateId ? { id: editingTemplateId, ...templateDoc } : template)
-          .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
       } else {
-        const docRef = await addDoc(collection(db, "users", user.uid, "workout_templates"), templateDoc);
-        setWorkoutTemplates(prev => [{ id: docRef.id, ...templateDoc }, ...prev]);
+        await addDoc(collection(db, "users", user.uid, "workout_templates"), templateDoc);
       }
 
       closeTemplateModal();
     } catch (error) {
       setTemplateFormError("Error saving template: " + error.message);
+    } finally {
+      isSavingTemplateRef.current = false;
+      setIsSavingTemplate(false);
     }
   };
 
@@ -1741,13 +1783,22 @@ export default function App() {
             )}
 
             <div style={styles.createExerciseActions}>
-              <button className="mu-button mu-secondary-btn" onClick={closeCreateExerciseModal} style={styles.cancelBtn}>
-                Cancel
-              </button>
-              <button className="mu-button mu-main-btn" onClick={saveCustomExercise} style={styles.saveExerciseBtn}>
-                Save Exercise
-              </button>
-            </div>
+	              <button className="mu-button mu-secondary-btn" onClick={closeCreateExerciseModal} style={styles.cancelBtn}>
+	                Cancel
+	              </button>
+	              <button
+	                className="mu-button mu-main-btn"
+	                onClick={saveCustomExercise}
+	                disabled={isSavingCustomExercise}
+	                style={{
+	                  ...styles.saveExerciseBtn,
+	                  opacity: isSavingCustomExercise ? 0.55 : 1,
+	                  cursor: isSavingCustomExercise ? 'not-allowed' : 'pointer',
+	                }}
+	              >
+	                {isSavingCustomExercise ? 'Saving...' : 'Save Exercise'}
+	              </button>
+	            </div>
           </div>
         </div>
       )}
@@ -1872,9 +1923,18 @@ export default function App() {
               <button className="mu-button mu-secondary-btn" onClick={closeTemplateModal} style={styles.cancelBtn}>
                 Cancel
               </button>
-              <button className="mu-button mu-main-btn" onClick={saveWorkoutTemplate} style={styles.saveExerciseBtn}>
-                Save Template
-              </button>
+	              <button
+	                className="mu-button mu-main-btn"
+	                onClick={saveWorkoutTemplate}
+	                disabled={isSavingTemplate}
+	                style={{
+	                  ...styles.saveExerciseBtn,
+	                  opacity: isSavingTemplate ? 0.55 : 1,
+	                  cursor: isSavingTemplate ? 'not-allowed' : 'pointer',
+	                }}
+	              >
+	                {isSavingTemplate ? 'Saving...' : 'Save Template'}
+	              </button>
             </div>
           </div>
 	        </div>
@@ -2073,14 +2133,14 @@ export default function App() {
 	                  <button
 	                    className="mu-button mu-main-btn"
 	                    onClick={saveImportedTemplate}
-	                    disabled={!canSaveImportedTemplate}
+	                    disabled={!canSaveImportedTemplate || isSavingImportedTemplate}
 	                    style={{
 	                      ...styles.saveExerciseBtn,
-	                      opacity: canSaveImportedTemplate ? 1 : 0.5,
-	                      cursor: canSaveImportedTemplate ? 'pointer' : 'not-allowed',
+	                      opacity: canSaveImportedTemplate && !isSavingImportedTemplate ? 1 : 0.5,
+	                      cursor: canSaveImportedTemplate && !isSavingImportedTemplate ? 'pointer' : 'not-allowed',
 	                    }}
 	                  >
-	                    Save Template
+	                    {isSavingImportedTemplate ? 'Saving...' : 'Save Template'}
 	                  </button>
 	                </div>
 	              </div>

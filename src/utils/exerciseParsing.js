@@ -21,7 +21,7 @@ export const normalizeMuscleGroup = (label = '') => {
   const normalized = normalizeSearchText(label);
   if (!normalized) return 'Other';
 
-  if (/\b(nguc|chest)\b/.test(normalized)) return 'Chest';
+  if (/\b(nguc|ngyc|ngc|ngllc|nglfc|chest)\b/.test(normalized)) return 'Chest';
   if (/\b(cau vai|lung|xo|back|lat|traps?)\b/.test(normalized)) return 'Back';
   if (/\b(vai|shoulders?|delts?)\b/.test(normalized)) return 'Shoulders';
   if (/\b(dui|mong|bap chan|chan|legs?|quads?|hamstrings?|glutes?|calves|calf)\b/.test(normalized)) return 'Legs';
@@ -34,13 +34,15 @@ export const normalizeMuscleGroup = (label = '') => {
 export const parseSetsAndReps = (text = '') => {
   const normalized = String(text)
     .replace(/[×–—]/g, match => (match === '×' ? 'x' : '-'))
+    .replace(/(\d)\s*\.\s*(\d)/g, '$1-$2')
     .replace(/\s+/g, ' ')
     .trim();
 
-  const compactMatch = normalized.match(/\b(\d{1,2})\s*x\s*(\d{1,3}(?:\s*-\s*\d{1,3})?)\b/i);
+  const repValuePattern = '(?:\\d{1,3}(?:\\s*-\\s*\\d{1,3})?|max)';
+  const compactMatch = normalized.match(new RegExp(`\\b(\\d{1,2})\\s*x\\s*(${repValuePattern})\\b`, 'i'));
   const setsMatch = normalized.match(/\b(\d{1,2})\s*(?:sets?|set|hiep|hiệp)\b/i);
-  const repsAfterSetsMatch = normalized.match(/(?:sets?|set|hiep|hiệp)\s*(?:x|by|of)?\s*(\d{1,3}(?:\s*-\s*\d{1,3})?)/i);
-  const repsMatch = normalized.match(/\b(\d{1,3}(?:\s*-\s*\d{1,3})?)\s*(?:reps?|rep|lan|lần)\b/i);
+  const repsAfterSetsMatch = normalized.match(new RegExp(`(?:sets?|set|hiep|hiệp)\\s*(?:x|by|of)?\\s*(${repValuePattern})`, 'i'));
+  const repsMatch = normalized.match(new RegExp(`\\b(${repValuePattern})\\s*(?:reps?|rep|lan|lần)\\b`, 'i'));
 
   return {
     sets: setsMatch?.[1] || compactMatch?.[1] || '',
@@ -109,3 +111,75 @@ export const detectNewExercises = (parsedExercises = [], exerciseLibrary = []) =
     .map(exercise => mapParsedExerciseToTemplateExercise(exercise, exerciseLibrary))
     .filter(exercise => exercise.isNewExercise && exercise.exerciseName)
 );
+
+const cleanOcrLine = (line = '') => (
+  String(line)
+    .replace(/^[\s•*-]*(?:o|0|○|◦|▪|●)?\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+);
+
+const getExerciseNameFromLine = (line = '') => {
+  const withoutBullet = cleanOcrLine(line);
+  const beforeParenthesis = withoutBullet.split('(')[0];
+  const beforeColon = beforeParenthesis.split(':')[0];
+  const withoutMalformedMuscleLabel = beforeColon
+    .replace(/\s+[il1]?(?:vai|nguc|ngyc|ngllc|nglfc|dui|bung|lung|mong)\b.*$/i, '');
+
+  return normalizeExerciseName(withoutMalformedMuscleLabel);
+};
+
+const getParentheticalNotes = (line = '') => (
+  [...String(line).matchAll(/\(([^)]*)\)/g)]
+    .map(match => match[1].trim())
+    .filter(Boolean)
+);
+
+export const parseWorkoutTextToParsedTemplate = (rawText = '') => {
+  const lines = String(rawText)
+    .split(/\r?\n/)
+    .map(cleanOcrLine)
+    .filter(Boolean);
+
+  const exerciseLineEntries = lines.map((line, index) => ({ line, index })).filter(({ line }) => {
+    const parsed = parseSetsAndReps(line);
+    return parsed.sets && parsed.reps && getExerciseNameFromLine(line);
+  });
+  const exerciseLines = exerciseLineEntries.map(entry => entry.line);
+
+  const firstExerciseIndex = exerciseLineEntries[0]?.index ?? lines.length;
+  const ignoredHeadingPattern = /^(upload image|parse image|png,|screenshot |image parser service)/i;
+  const headingCandidates = lines
+    .slice(0, firstExerciseIndex)
+    .filter(line => !ignoredHeadingPattern.test(line))
+    .filter(line => !parseSetsAndReps(line).sets);
+
+  const templateName = (
+    headingCandidates[headingCandidates.length - 1] ||
+    lines.find(line => !exerciseLines.includes(line) && !parseSetsAndReps(line).sets && !ignoredHeadingPattern.test(line)) ||
+    lines[0] ||
+    'Imported Workout Template'
+  ).replace(/^[#\s]+/, '').trim();
+
+  const exercises = exerciseLines.map(line => {
+    const parsed = parseSetsAndReps(line);
+    const notes = getParentheticalNotes(line);
+    const muscleLabel = notes.find(note => normalizeMuscleGroup(note) !== 'Other') || '';
+
+    return {
+      exerciseName: getExerciseNameFromLine(line),
+      muscleGroup: normalizeMuscleGroup(muscleLabel || notes.join(' ')),
+      sets: parsed.sets,
+      reps: parsed.reps,
+      weight: '',
+      notes: notes.join('. '),
+      confidence: 0.82,
+    };
+  });
+
+  return {
+    templateName,
+    exercises,
+    rawText: String(rawText || ''),
+  };
+};

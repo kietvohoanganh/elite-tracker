@@ -80,11 +80,11 @@ const mockParsedTemplate = {
 };
 
 const isMockParserEnabled = () => (
-  import.meta.env.VITE_USE_REAL_IMAGE_PARSER !== 'true'
+  import.meta.env.VITE_USE_MOCK_IMAGE_PARSER === 'true'
 );
 
 const canFallbackToMockParser = () => (
-  import.meta.env.DEV && import.meta.env.VITE_DISABLE_IMAGE_PARSER_MOCK !== 'true'
+  import.meta.env.DEV && isMockParserEnabled()
 );
 
 const getMockParsedTemplate = async () => {
@@ -116,6 +116,11 @@ export const parseWorkoutTemplateImage = async (imageBase64) => {
   const contentType = response.headers.get('content-type') || '';
   if (!response.ok) {
     if (response.status === 404 && canFallbackToMockParser()) return getMockParsedTemplate();
+
+    if (contentType.includes('application/json')) {
+      const errorBody = await response.json().catch(() => ({}));
+      if (errorBody.error) throw new Error(errorBody.error);
+    }
 
     throw new Error(response.status === 404
       ? 'Image parser service is not configured.'
