@@ -99,15 +99,10 @@ const getParserEndpoints = () => {
   if (import.meta.env.DEV && typeof window !== 'undefined') {
     const { protocol, hostname, port } = window.location;
     const portSegment = port ? `:${port}` : '';
-    const hostAliases = hostname === 'localhost'
-      ? ['127.0.0.1']
-      : hostname === '127.0.0.1'
-        ? ['localhost']
-        : [];
 
-    hostAliases.forEach(host => {
-      endpoints.push(`${protocol}//${host}${portSegment}${IMAGE_PARSER_ENDPOINT}`);
-    });
+    endpoints.push(`${protocol}//${hostname}${portSegment}${IMAGE_PARSER_ENDPOINT}`);
+    endpoints.push(`${protocol}//localhost${portSegment}${IMAGE_PARSER_ENDPOINT}`);
+    endpoints.push(`${protocol}//[::1]${portSegment}${IMAGE_PARSER_ENDPOINT}`);
   }
 
   return [...new Set(endpoints)];
