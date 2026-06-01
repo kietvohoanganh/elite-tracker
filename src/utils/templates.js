@@ -16,12 +16,17 @@ export const normalizeTemplateExercise = (exercise = {}) => {
       }))
     : createDefaultTemplateSet(1);
 
-  return {
+  const normalizedExercise = {
     exerciseId: String(exercise.exerciseId ?? exercise.exerciseName ?? ''),
     exerciseName: String(exercise.exerciseName ?? exercise.name ?? '').trim(),
     muscleGroup: String(exercise.muscleGroup ?? exercise.category ?? 'Other').trim() || 'Other',
     sets,
   };
+
+  const notes = String(exercise.notes ?? '').trim();
+  if (notes) normalizedExercise.notes = notes;
+
+  return normalizedExercise;
 };
 
 export const convertTemplateToActiveWorkout = (template = {}) => {

@@ -11,6 +11,12 @@ import {
   validateTemplate,
 } from './utils/templates';
 import { getBestSetForExercise, getExerciseHistory } from './utils/exercises';
+import {
+  detectNewExercises,
+  findExerciseLibraryMatch,
+  mapParsedExerciseToTemplateExercise,
+} from './utils/exerciseParsing';
+import { parseWorkoutTemplateImage } from './services/templateImageParser';
 
 // 1. YOUR FIREBASE CONFIGURATION
 const firebaseConfig = {
@@ -60,6 +66,7 @@ const EXERCISE_DATABASE = {
 };
 
 const MUSCLE_GROUP_OPTIONS = ['Chest', 'Back', 'Shoulders', 'Legs', 'Arms', 'Core', 'Other'];
+const MAX_TEMPLATE_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 
 const createDefaultExerciseId = (muscleGroup, exerciseName) => {
   const slug = `${muscleGroup}-${exerciseName}`
@@ -68,6 +75,15 @@ const createDefaultExerciseId = (muscleGroup, exerciseName) => {
     .replace(/^-|-$/g, '');
 
   return `default-${slug}`;
+};
+
+const createImportedExerciseId = (muscleGroup, exerciseName) => {
+  const slug = `${muscleGroup}-${exerciseName}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  return `import-${slug || 'exercise'}`;
 };
 
 const getUniformSetValue = (sets = [], field) => {
@@ -84,6 +100,23 @@ const formatHistoryMetric = (value) => {
   const number = Number(value);
   if (!Number.isFinite(number)) return String(value).trim() || '—';
   return Number.isInteger(number) ? String(number) : String(Number(number.toFixed(2)));
+};
+
+const isValidImportedExercise = (exercise = {}) => {
+  const setCount = Number.parseInt(exercise.setCount, 10);
+  return Boolean(
+    String(exercise.exerciseName || '').trim() &&
+    String(exercise.muscleGroup || '').trim() &&
+    Number.isFinite(setCount) &&
+    setCount > 0
+  );
+};
+
+const getConfidenceLabel = (confidence = 0) => {
+  const value = Number(confidence);
+  if (value >= 0.85) return 'High';
+  if (value >= 0.65) return 'Medium';
+  return 'Low';
 };
 
 // 4. SEASONING DATABASE 
@@ -174,12 +207,23 @@ export default function App() {
   const [showExerciseModal, setShowExerciseModal] = useState(false);
   const [showCreateExerciseModal, setShowCreateExerciseModal] = useState(false);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [showImportTemplateModal, setShowImportTemplateModal] = useState(false);
   const [editingTemplateId, setEditingTemplateId] = useState(null);
   const [templateName, setTemplateName] = useState('');
   const [templateNotes, setTemplateNotes] = useState('');
   const [templateExercises, setTemplateExercises] = useState([]);
   const [templateExerciseSearch, setTemplateExerciseSearch] = useState('');
   const [templateFormError, setTemplateFormError] = useState('');
+  const [importImagePreview, setImportImagePreview] = useState('');
+  const [importImageBase64, setImportImageBase64] = useState('');
+  const [importImageFileName, setImportImageFileName] = useState('');
+  const [isParsingTemplateImage, setIsParsingTemplateImage] = useState(false);
+  const [hasParsedImport, setHasParsedImport] = useState(false);
+  const [importTemplateError, setImportTemplateError] = useState('');
+  const [importedTemplateName, setImportedTemplateName] = useState('');
+  const [importedTemplateExercises, setImportedTemplateExercises] = useState([]);
+  const [importRawText, setImportRawText] = useState('');
+  const [importExerciseSearch, setImportExerciseSearch] = useState('');
   const [currentTemplateId, setCurrentTemplateId] = useState(null);
   const [currentTemplateName, setCurrentTemplateName] = useState('');
   const [seconds, setSeconds] = useState(0);
@@ -290,6 +334,12 @@ export default function App() {
   const selectedExerciseBestSet = useMemo(() => (
     getBestSetForExercise(selectedExerciseHistory)
   ), [selectedExerciseHistory]);
+
+  const canSaveImportedTemplate = useMemo(() => (
+    importedTemplateName.trim() &&
+    importedTemplateExercises.length > 0 &&
+    importedTemplateExercises.every(isValidImportedExercise)
+  ), [importedTemplateExercises, importedTemplateName]);
 
   // --- USE EFFECTS ---
   useEffect(() => {
@@ -633,7 +683,11 @@ export default function App() {
   };
 
   const openCreateExerciseModal = (context = 'workout') => {
-    const sourceSearchQuery = context === 'template' ? templateExerciseSearch : exerciseSearchQuery;
+    const sourceSearchQuery = context === 'template'
+      ? templateExerciseSearch
+      : context === 'import'
+        ? importExerciseSearch
+        : exerciseSearchQuery;
 
     setCreateExerciseContext(context);
     setNewExerciseName(sourceSearchQuery.trim());
@@ -695,6 +749,9 @@ export default function App() {
       if (createExerciseContext === 'template') {
         setTemplateExerciseSearch(exerciseName);
         setTemplateFormError('');
+      } else if (createExerciseContext === 'import') {
+        setImportExerciseSearch(exerciseName);
+        setImportTemplateError('');
       } else {
         setExerciseSearchQuery(exerciseName);
       }
@@ -706,6 +763,260 @@ export default function App() {
       setCreateExerciseError('');
     } catch (error) {
       setCreateExerciseError("Error creating exercise: " + error.message);
+    }
+  };
+
+  const resetImportTemplateForm = () => {
+    setImportImagePreview('');
+    setImportImageBase64('');
+    setImportImageFileName('');
+    setIsParsingTemplateImage(false);
+    setHasParsedImport(false);
+    setImportTemplateError('');
+    setImportedTemplateName('');
+    setImportedTemplateExercises([]);
+    setImportRawText('');
+    setImportExerciseSearch('');
+  };
+
+  const openImportTemplateModal = () => {
+    resetImportTemplateForm();
+    setShowImportTemplateModal(true);
+  };
+
+  const closeImportTemplateModal = () => {
+    setShowImportTemplateModal(false);
+    setShowCreateExerciseModal(false);
+    resetImportTemplateForm();
+  };
+
+  const buildImportedExerciseReview = (parsedExercise) => {
+    const mappedExercise = mapParsedExerciseToTemplateExercise(parsedExercise, allExerciseLibrary);
+
+    return {
+      ...mappedExercise,
+      setCount: String(mappedExercise.sets.length || 1),
+      reps: getUniformSetValue(mappedExercise.sets, 'reps'),
+      weight: getUniformSetValue(mappedExercise.sets, 'weight'),
+    };
+  };
+
+  const buildLibraryExerciseForImport = (exercise) => ({
+    exerciseId: exercise.exerciseId,
+    exerciseName: exercise.exerciseName,
+    muscleGroup: exercise.muscleGroup,
+    setCount: '3',
+    reps: '',
+    weight: '',
+    notes: '',
+    confidence: 1,
+    isNewExercise: false,
+  });
+
+  const refreshImportedExerciseLibraryStatus = (exercise) => {
+    const libraryMatch = findExerciseLibraryMatch(exercise.exerciseName, exercise.muscleGroup, allExerciseLibrary);
+
+    return {
+      ...exercise,
+      exerciseId: libraryMatch?.exerciseId || createImportedExerciseId(exercise.muscleGroup, exercise.exerciseName),
+      isNewExercise: !libraryMatch,
+    };
+  };
+
+  const handleImportImageChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const acceptedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+    if (!acceptedTypes.includes(file.type)) {
+      setImportTemplateError('Please upload a PNG, JPG, JPEG, or WEBP image.');
+      return;
+    }
+
+    if (file.size > MAX_TEMPLATE_IMAGE_SIZE_BYTES) {
+      setImportTemplateError('Image must be 5MB or smaller.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      setImportImagePreview(dataUrl);
+      setImportImageBase64(dataUrl.split(',')[1] || '');
+      setImportImageFileName(file.name);
+      setImportedTemplateName('');
+      setImportedTemplateExercises([]);
+      setImportRawText('');
+      setHasParsedImport(false);
+      setImportTemplateError('');
+    };
+    reader.onerror = () => {
+      setImportTemplateError('Could not read this image. Try a clearer image or enter the template manually.');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const parseImportedTemplateImage = async () => {
+    if (!importImageBase64) {
+      setImportTemplateError('Please upload an image before parsing.');
+      return;
+    }
+
+    setIsParsingTemplateImage(true);
+    setImportTemplateError('');
+
+    try {
+      const parsedTemplate = await parseWorkoutTemplateImage(importImageBase64);
+      const parsedExercises = Array.isArray(parsedTemplate.exercises) ? parsedTemplate.exercises : [];
+      const mappedExercises = parsedExercises
+        .map(buildImportedExerciseReview)
+        .filter(exercise => exercise.exerciseName);
+
+      setImportedTemplateName(parsedTemplate.templateName || 'Imported Workout Template');
+      setImportedTemplateExercises(mappedExercises);
+      setImportRawText(parsedTemplate.rawText || '');
+      setHasParsedImport(true);
+    } catch (error) {
+      setHasParsedImport(false);
+      setImportedTemplateExercises([]);
+      setImportTemplateError(error.message || 'Could not detect a workout plan from this image. Try a clearer image or enter the template manually.');
+    } finally {
+      setIsParsingTemplateImage(false);
+    }
+  };
+
+  const updateImportedTemplateExercise = (index, field, value) => {
+    setImportedTemplateExercises(prev => prev.map((exercise, exerciseIndex) => {
+      if (exerciseIndex !== index) return exercise;
+
+      const nextExercise = {
+        ...exercise,
+        [field]: field === 'setCount' ? value.replace(/[^\d]/g, '') : value,
+      };
+
+      if (field === 'exerciseName' || field === 'muscleGroup') {
+        return refreshImportedExerciseLibraryStatus(nextExercise);
+      }
+
+      return nextExercise;
+    }));
+    setImportTemplateError('');
+  };
+
+  const removeImportedTemplateExercise = (index) => {
+    setImportedTemplateExercises(prev => prev.filter((_, exerciseIndex) => exerciseIndex !== index));
+    setImportTemplateError('');
+  };
+
+  const addExerciseToImportedTemplate = (exercise) => {
+    const alreadyAdded = importedTemplateExercises.some(importedExercise =>
+      importedExercise.exerciseName.toLowerCase() === exercise.exerciseName.toLowerCase() &&
+      importedExercise.muscleGroup === exercise.muscleGroup
+    );
+
+    if (alreadyAdded) {
+      setImportTemplateError('This exercise is already in the imported template.');
+      return;
+    }
+
+    setImportedTemplateExercises(prev => [...prev, buildLibraryExerciseForImport(exercise)]);
+    setImportExerciseSearch('');
+    setImportTemplateError('');
+  };
+
+  const saveImportedTemplate = async () => {
+    if (!user) return;
+
+    const templateNameValue = importedTemplateName.trim();
+    if (!templateNameValue) {
+      setImportTemplateError('Template name is required.');
+      return;
+    }
+
+    if (importedTemplateExercises.length === 0) {
+      setImportTemplateError('Add at least one exercise before saving this template.');
+      return;
+    }
+
+    const reviewedExercises = importedTemplateExercises.map(refreshImportedExerciseLibraryStatus);
+    if (!reviewedExercises.every(isValidImportedExercise)) {
+      setImportTemplateError('Review each exercise. Name, muscle group, and sets are required.');
+      return;
+    }
+
+    const newExercises = detectNewExercises(reviewedExercises, allExerciseLibrary);
+    const shouldSaveNewExercises = newExercises.length > 0
+      ? window.confirm('Some exercises are not in your library. Save them as custom exercises?')
+      : false;
+
+    const now = Date.now();
+    const savedCustomExerciseIds = {};
+    const customExerciseDocs = [];
+    const identityKey = (exercise) => `${exercise.muscleGroup}|${exercise.exerciseName.toLowerCase()}`;
+
+    try {
+      if (shouldSaveNewExercises) {
+        const uniqueNewExercises = reviewedExercises.reduce((items, exercise) => {
+          if (!exercise.isNewExercise) return items;
+
+          const key = identityKey(exercise);
+          if (items.some(item => identityKey(item) === key)) return items;
+          return [...items, exercise];
+        }, []);
+
+        for (const exercise of uniqueNewExercises) {
+          const exerciseDoc = {
+            name: exercise.exerciseName.trim(),
+            muscleGroup: exercise.muscleGroup,
+            createdAt: now,
+            updatedAt: now,
+            isCustom: true,
+          };
+
+          if (exercise.notes.trim()) exerciseDoc.notes = exercise.notes.trim();
+
+          const docRef = await addDoc(collection(db, "users", user.uid, "custom_exercises"), exerciseDoc);
+          savedCustomExerciseIds[identityKey(exercise)] = docRef.id;
+          customExerciseDocs.push({ id: docRef.id, ...exerciseDoc });
+        }
+
+        if (customExerciseDocs.length > 0) {
+          setCustomExercises(prev => [...prev, ...customExerciseDocs]);
+          setLastCreatedExerciseId(customExerciseDocs[customExerciseDocs.length - 1].id);
+        }
+      }
+
+      const templateExercisesForSave = reviewedExercises.map(exercise => {
+        const libraryMatch = findExerciseLibraryMatch(exercise.exerciseName, exercise.muscleGroup, allExerciseLibrary);
+        const exerciseId = savedCustomExerciseIds[identityKey(exercise)]
+          || libraryMatch?.exerciseId
+          || exercise.exerciseId
+          || createImportedExerciseId(exercise.muscleGroup, exercise.exerciseName);
+
+        return normalizeTemplateExercise({
+          exerciseId,
+          exerciseName: exercise.exerciseName,
+          muscleGroup: exercise.muscleGroup,
+          notes: exercise.notes,
+          sets: createDefaultTemplateSet(exercise.setCount, exercise.reps, exercise.weight),
+        });
+      });
+
+      const templateDoc = {
+        name: templateNameValue,
+        exercises: templateExercisesForSave,
+        source: 'image_import',
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      if (importRawText.trim()) templateDoc.rawImportText = importRawText.trim();
+
+      const docRef = await addDoc(collection(db, "users", user.uid, "workout_templates"), templateDoc);
+      setWorkoutTemplates(prev => [{ id: docRef.id, ...templateDoc }, ...prev]);
+      closeImportTemplateModal();
+    } catch (error) {
+      setImportTemplateError("Error saving imported template: " + error.message);
     }
   };
 
@@ -980,12 +1291,17 @@ export default function App() {
                 </div>
 
                 <section style={styles.templateSection}>
-                  <div style={styles.templateSectionHeader}>
-                    <h2 style={styles.templateSectionTitle}>Templates</h2>
-                    <button className="mu-button mu-secondary-btn" onClick={openCreateTemplateModal} style={styles.createTemplateBtn}>
-                      + Create Template
-                    </button>
-                  </div>
+	                  <div style={styles.templateSectionHeader}>
+	                    <h2 style={styles.templateSectionTitle}>Templates</h2>
+	                    <div style={styles.templateHeaderActions}>
+	                      <button className="mu-button mu-secondary-btn" onClick={openCreateTemplateModal} style={styles.createTemplateBtn}>
+	                        + Create Template
+	                      </button>
+	                      <button className="mu-button mu-secondary-btn" onClick={openImportTemplateModal} style={styles.importTemplateBtn}>
+	                        Import from Image
+	                      </button>
+	                    </div>
+	                  </div>
 
                   {templatesError && (
                     <p style={styles.templateErrorText}>{templatesError}</p>
@@ -1437,8 +1753,8 @@ export default function App() {
       )}
 
       {/* CREATE / EDIT TEMPLATE MODAL */}
-      {showTemplateModal && (
-        <div style={{...styles.modalOverlay, zIndex: 140}}>
+	      {showTemplateModal && (
+	        <div style={{...styles.modalOverlay, zIndex: 140}}>
           <div style={styles.modalHeader}>
             <span className="mu-icon-button" onClick={closeTemplateModal} style={styles.modalClose}>✕</span>
             <h2 style={{margin: 0, fontSize: '18px'}}>{editingTemplateId ? 'Edit Template' : 'Create Template'}</h2>
@@ -1561,10 +1877,219 @@ export default function App() {
               </button>
             </div>
           </div>
-        </div>
-      )}
+	        </div>
+	      )}
 
-      {/* EXERCISE HISTORY MODAL */}
+	      {/* IMPORT TEMPLATE FROM IMAGE MODAL */}
+	      {showImportTemplateModal && (
+	        <div style={{...styles.modalOverlay, zIndex: 140}}>
+	          <div style={styles.modalHeader}>
+	            <span className="mu-icon-button" onClick={closeImportTemplateModal} style={styles.modalClose}>✕</span>
+	            <h2 style={{margin: 0, fontSize: '18px'}}>Import Template From Image</h2>
+	            <span style={{width: '24px'}}></span>
+	          </div>
+
+	          <div style={styles.importTemplateModalBody}>
+	            <div style={styles.importUploadPanel}>
+	              <div style={styles.importUploadTop}>
+	                <label className="mu-button mu-secondary-btn" style={styles.uploadImageButton}>
+	                  Upload image
+	                  <input
+	                    type="file"
+	                    accept="image/png,image/jpeg,image/jpg,image/webp"
+	                    onChange={handleImportImageChange}
+	                    style={{display: 'none'}}
+	                  />
+	                </label>
+	                <button
+	                  className="mu-button mu-main-btn"
+	                  onClick={parseImportedTemplateImage}
+	                  disabled={!importImageBase64 || isParsingTemplateImage}
+	                  style={{
+	                    ...styles.parseImageBtn,
+	                    opacity: !importImageBase64 || isParsingTemplateImage ? 0.5 : 1,
+	                  }}
+	                >
+	                  {isParsingTemplateImage ? 'Parsing...' : 'Parse Image'}
+	                </button>
+	              </div>
+	              <p style={styles.importHint}>PNG, JPG, JPEG, or WEBP. Max 5MB. Parsing starts only after Parse Image.</p>
+	              {importImageFileName && (
+	                <p style={styles.importFileName}>{importImageFileName}</p>
+	              )}
+	              {importImagePreview && (
+	                <div style={styles.importImagePreviewWrap}>
+	                  <img src={importImagePreview} alt="Uploaded workout template preview" style={styles.importImagePreview} />
+	                </div>
+	              )}
+	              {isParsingTemplateImage && (
+	                <div style={styles.importLoadingState}>Analyzing image...</div>
+	              )}
+	              {importTemplateError && (
+	                <p style={styles.formError}>{importTemplateError}</p>
+	              )}
+	            </div>
+
+	            {hasParsedImport && (
+	              <div style={styles.importReviewPanel}>
+	                <h3 style={styles.templateSubTitle}>Review Imported Template</h3>
+	                <label style={{...styles.formLabel, marginTop: '16px'}}>Template name</label>
+	                <input
+	                  type="text"
+	                  value={importedTemplateName}
+	                  onChange={(event) => {
+	                    setImportedTemplateName(event.target.value);
+	                    setImportTemplateError('');
+	                  }}
+	                  style={styles.authInput}
+	                />
+
+	                <div style={styles.templateLibraryPanel}>
+	                  <div style={styles.templateLibraryHeader}>
+	                    <h3 style={styles.templateSubTitle}>Add missing exercise</h3>
+	                  </div>
+	                  <ExercisePicker
+	                    exerciseLibrary={allExerciseLibrary}
+	                    searchQuery={importExerciseSearch}
+	                    onSearchChange={setImportExerciseSearch}
+	                    onSelectExercise={addExerciseToImportedTemplate}
+	                    onOpenCreateExercise={() => openCreateExerciseModal('import')}
+	                    isExerciseSelected={(exercise) => importedTemplateExercises.some(importedExercise =>
+	                      importedExercise.exerciseName.toLowerCase() === exercise.exerciseName.toLowerCase() &&
+	                      importedExercise.muscleGroup === exercise.muscleGroup
+	                    )}
+	                    getSelectLabel={(_, selected) => selected ? 'Added' : 'Add'}
+	                    highlightedExerciseId={lastCreatedExerciseId}
+	                    compact
+	                    styles={styles}
+	                    theme={THEME}
+	                  />
+	                </div>
+
+	                <div style={styles.templateExerciseEditorHeader}>
+	                  <h3 style={styles.templateSubTitle}>Exercises:</h3>
+	                  <span style={styles.templateExerciseCount}>{importedTemplateExercises.length} exercises</span>
+	                </div>
+
+	                {importedTemplateExercises.length === 0 ? (
+	                  <div style={styles.importEmptyState}>
+	                    <p style={{margin: 0, color: THEME.textSecondary}}>No exercises were detected in this image. Try a clearer image or enter the template manually.</p>
+	                  </div>
+	                ) : (
+	                  <div style={styles.importReviewList}>
+	                    {importedTemplateExercises.map((exercise, index) => {
+	                      const confidenceLabel = getConfidenceLabel(exercise.confidence);
+	                      const isLowConfidence = confidenceLabel === 'Low';
+
+	                      return (
+	                        <div key={`${exercise.exerciseId}-${index}`} style={styles.importReviewCard}>
+	                          <div style={styles.importReviewCardTop}>
+	                            <div style={{minWidth: 0}}>
+	                              <h4 style={styles.templateExerciseEditorTitle}>{index + 1}. {exercise.exerciseName || 'Unnamed exercise'}</h4>
+	                              <div style={styles.importBadges}>
+	                                <span style={styles.importConfidenceBadge}>Confidence: {confidenceLabel}</span>
+	                                {exercise.isNewExercise && <span style={styles.importNewBadge}>New exercise</span>}
+	                              </div>
+	                              {isLowConfidence && (
+	                                <p style={styles.importReviewWarning}>Please review this item.</p>
+	                              )}
+	                            </div>
+	                            <button className="mu-button mu-danger-btn" onClick={() => removeImportedTemplateExercise(index)} style={styles.templateRemoveBtn}>
+	                              Remove
+	                            </button>
+	                          </div>
+
+	                          <div style={styles.importReviewFields}>
+	                            <div style={styles.importFieldWide}>
+	                              <label style={styles.inputLabel}>Exercise name</label>
+	                              <input
+	                                type="text"
+	                                value={exercise.exerciseName}
+	                                onChange={(event) => updateImportedTemplateExercise(index, 'exerciseName', event.target.value)}
+	                                style={{...styles.authInput, marginBottom: 0, padding: '11px'}}
+	                              />
+	                            </div>
+	                            <div>
+	                              <label style={styles.inputLabel}>Muscle group</label>
+	                              <select
+	                                value={exercise.muscleGroup}
+	                                onChange={(event) => updateImportedTemplateExercise(index, 'muscleGroup', event.target.value)}
+	                                style={{...styles.authInput, marginBottom: 0, padding: '11px', appearance: 'none'}}
+	                              >
+	                                {MUSCLE_GROUP_OPTIONS.map(group => (
+	                                  <option key={group} value={group}>{group}</option>
+	                                ))}
+	                              </select>
+	                            </div>
+	                            <div>
+	                              <label style={styles.inputLabel}>Sets</label>
+	                              <input
+	                                type="number"
+	                                min="1"
+	                                value={exercise.setCount}
+	                                onChange={(event) => updateImportedTemplateExercise(index, 'setCount', event.target.value)}
+	                                style={{...styles.authInput, marginBottom: 0, padding: '11px'}}
+	                              />
+	                            </div>
+	                            <div>
+	                              <label style={styles.inputLabel}>Reps</label>
+	                              <input
+	                                type="text"
+	                                value={exercise.reps}
+	                                onChange={(event) => updateImportedTemplateExercise(index, 'reps', event.target.value)}
+	                                style={{...styles.authInput, marginBottom: 0, padding: '11px'}}
+	                              />
+	                            </div>
+	                            <div>
+	                              <label style={styles.inputLabel}>Weight</label>
+	                              <input
+	                                type="text"
+	                                placeholder="Optional"
+	                                value={exercise.weight}
+	                                onChange={(event) => updateImportedTemplateExercise(index, 'weight', event.target.value)}
+	                                style={{...styles.authInput, marginBottom: 0, padding: '11px'}}
+	                              />
+	                            </div>
+	                            <div style={styles.importFieldWide}>
+	                              <label style={styles.inputLabel}>Notes</label>
+	                              <input
+	                                type="text"
+	                                value={exercise.notes}
+	                                onChange={(event) => updateImportedTemplateExercise(index, 'notes', event.target.value)}
+	                                style={{...styles.authInput, marginBottom: 0, padding: '11px'}}
+	                              />
+	                            </div>
+	                          </div>
+	                        </div>
+	                      );
+	                    })}
+	                  </div>
+	                )}
+
+	                <div style={styles.templateModalActions}>
+	                  <button className="mu-button mu-secondary-btn" onClick={closeImportTemplateModal} style={styles.cancelBtn}>
+	                    Cancel
+	                  </button>
+	                  <button
+	                    className="mu-button mu-main-btn"
+	                    onClick={saveImportedTemplate}
+	                    disabled={!canSaveImportedTemplate}
+	                    style={{
+	                      ...styles.saveExerciseBtn,
+	                      opacity: canSaveImportedTemplate ? 1 : 0.5,
+	                      cursor: canSaveImportedTemplate ? 'pointer' : 'not-allowed',
+	                    }}
+	                  >
+	                    Save Template
+	                  </button>
+	                </div>
+	              </div>
+	            )}
+	          </div>
+	        </div>
+	      )}
+
+	      {/* EXERCISE HISTORY MODAL */}
       {selectedExerciseHistoryName && (
         <div style={styles.exerciseHistoryOverlay}>
           <div style={styles.exerciseHistoryModal}>
@@ -2008,6 +2533,13 @@ const styles = {
     gap: '12px',
     marginBottom: '14px',
   },
+  templateHeaderActions: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: '10px',
+    flexWrap: 'wrap',
+  },
   templateSectionTitle: {
     margin: 0,
     color: THEME.textPrimary,
@@ -2018,6 +2550,17 @@ const styles = {
     backgroundColor: THEME.cardBg,
     color: THEME.primaryRed,
     border: `1px solid ${THEME.redMedium}`,
+    borderRadius: '10px',
+    padding: '11px 13px',
+    fontSize: '14px',
+    fontWeight: '800',
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  importTemplateBtn: {
+    backgroundColor: THEME.bgDark,
+    color: THEME.textPrimary,
+    border: `1px solid ${THEME.border}`,
     borderRadius: '10px',
     padding: '11px 13px',
     fontSize: '14px',
@@ -2250,6 +2793,159 @@ const styles = {
     justifyContent: 'flex-end',
     gap: '10px',
     marginTop: '18px',
+  },
+
+  importTemplateModalBody: {
+    padding: '22px 20px',
+    overflowY: 'auto',
+    flex: 1,
+  },
+  importUploadPanel: {
+    backgroundColor: THEME.cardBg,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '12px',
+    padding: '16px',
+    marginBottom: '18px',
+    boxShadow: THEME.shadow,
+  },
+  importUploadTop: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    flexWrap: 'wrap',
+  },
+  uploadImageButton: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: '44px',
+    backgroundColor: THEME.bgDark,
+    color: THEME.textPrimary,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '10px',
+    padding: '0 14px',
+    fontWeight: '900',
+    cursor: 'pointer',
+  },
+  parseImageBtn: {
+    minHeight: '44px',
+    backgroundColor: THEME.primaryRed,
+    color: THEME.textPrimary,
+    border: `1px solid ${THEME.primaryRed}`,
+    borderRadius: '10px',
+    padding: '0 14px',
+    fontWeight: '900',
+    cursor: 'pointer',
+  },
+  importHint: {
+    margin: '12px 0 0 0',
+    color: THEME.textSecondary,
+    fontSize: '12px',
+    lineHeight: 1.45,
+  },
+  importFileName: {
+    margin: '10px 0 0 0',
+    color: THEME.accentGold,
+    fontSize: '13px',
+    fontWeight: '800',
+    overflowWrap: 'anywhere',
+  },
+  importImagePreviewWrap: {
+    marginTop: '14px',
+    backgroundColor: THEME.bgDark,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '12px',
+    overflow: 'hidden',
+    maxHeight: '280px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  importImagePreview: {
+    width: '100%',
+    maxHeight: '280px',
+    objectFit: 'contain',
+    display: 'block',
+  },
+  importLoadingState: {
+    marginTop: '14px',
+    padding: '13px',
+    backgroundColor: THEME.redSoft,
+    color: THEME.primaryRed,
+    border: `1px solid ${THEME.redMedium}`,
+    borderRadius: '10px',
+    fontSize: '13px',
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  importReviewPanel: {
+    backgroundColor: THEME.bgBlack,
+    borderTop: `1px solid ${THEME.border}`,
+    paddingTop: '4px',
+  },
+  importEmptyState: {
+    backgroundColor: THEME.cardBg,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '12px',
+    padding: '18px',
+    marginBottom: '16px',
+  },
+  importReviewList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    marginBottom: '16px',
+  },
+  importReviewCard: {
+    backgroundColor: THEME.cardBg,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '12px',
+    padding: '14px',
+    boxShadow: THEME.shadow,
+  },
+  importReviewCardTop: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '12px',
+    marginBottom: '12px',
+  },
+  importBadges: {
+    display: 'flex',
+    gap: '8px',
+    flexWrap: 'wrap',
+    marginTop: '8px',
+  },
+  importConfidenceBadge: {
+    border: `1px solid ${THEME.border}`,
+    color: THEME.textSecondary,
+    borderRadius: '999px',
+    padding: '4px 8px',
+    fontSize: '11px',
+    fontWeight: '900',
+  },
+  importNewBadge: {
+    border: `1px solid ${THEME.redMedium}`,
+    backgroundColor: THEME.redSoft,
+    color: THEME.primaryRed,
+    borderRadius: '999px',
+    padding: '4px 8px',
+    fontSize: '11px',
+    fontWeight: '900',
+  },
+  importReviewWarning: {
+    margin: '8px 0 0 0',
+    color: THEME.accentGold,
+    fontSize: '12px',
+    fontWeight: '800',
+  },
+  importReviewFields: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+    gap: '10px',
+  },
+  importFieldWide: {
+    gridColumn: '1 / -1',
   },
 
   historyExerciseBlock: { marginTop: '10px', backgroundColor: THEME.bgDark, borderRadius: '10px', padding: '12px', border: `1px solid ${THEME.border}` },
