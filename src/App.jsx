@@ -4,6 +4,7 @@ import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWith
 import { getFirestore, collection, query, orderBy, onSnapshot, addDoc, deleteDoc, doc, setDoc, getDoc } from "firebase/firestore";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import ExercisePicker from './components/ExercisePicker';
+import FitnessIcon from './components/FitnessIcon';
 import {
   convertTemplateToActiveWorkout,
   createDefaultTemplateSet,
@@ -35,23 +36,23 @@ const db = getFirestore(app);
 
 const THEME = {
   primaryRed: '#DA291C',
-  primaryRedHover: '#B71C12',
-  bgBlack: '#0B0B0B',
-  bgDark: '#151515',
-  cardBg: '#1C1C1C',
-  border: '#2A2A2A',
-  textPrimary: '#F5F5F5',
-  textSecondary: '#A1A1AA',
+  primaryRedHover: '#FF3B30',
+  bgBlack: '#050506',
+  bgDark: '#101114',
+  cardBg: 'rgba(24, 25, 30, 0.86)',
+  border: 'rgba(255, 255, 255, 0.105)',
+  textPrimary: '#F8FAFC',
+  textSecondary: '#A7ADB8',
   accentGold: '#F2C94C',
-  successGreen: '#34C759',
+  successGreen: '#35D07F',
   dangerRed: '#FF453A',
-  redSoft: 'rgba(218, 41, 28, 0.14)',
-  redMedium: 'rgba(218, 41, 28, 0.24)',
-  goldSoft: 'rgba(242, 201, 76, 0.14)',
-  successSoft: 'rgba(52, 199, 89, 0.14)',
-  dangerSoft: 'rgba(255, 69, 58, 0.12)',
-  overlay: 'rgba(0, 0, 0, 0.76)',
-  shadow: '0 18px 40px rgba(0, 0, 0, 0.34)',
+  redSoft: 'rgba(218, 41, 28, 0.16)',
+  redMedium: 'rgba(218, 41, 28, 0.28)',
+  goldSoft: 'rgba(242, 201, 76, 0.16)',
+  successSoft: 'rgba(53, 208, 127, 0.16)',
+  dangerSoft: 'rgba(255, 69, 58, 0.14)',
+  overlay: 'rgba(0, 0, 0, 0.72)',
+  shadow: '0 22px 58px rgba(0, 0, 0, 0.46)',
   macroCarbs: '#D6AE35',
 };
 
@@ -67,6 +68,13 @@ const EXERCISE_DATABASE = {
 
 const MUSCLE_GROUP_OPTIONS = ['Chest', 'Back', 'Shoulders', 'Legs', 'Arms', 'Core', 'Other'];
 const MAX_TEMPLATE_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
+const MAIN_NAV_ITEMS = [
+  { id: 'history', label: 'History', icon: 'history' },
+  { id: 'tdee', label: 'TDEE', icon: 'tdee' },
+  { id: 'workout', label: 'Workout', icon: 'workout', isPrimary: true },
+  { id: 'food', label: 'Nutrition', icon: 'nutrition' },
+  { id: 'you', label: 'Profile', icon: 'profile' },
+];
 
 const createDefaultExerciseId = (muscleGroup, exerciseName) => {
   const slug = `${muscleGroup}-${exerciseName}`
@@ -139,7 +147,6 @@ const SEASONING_DATABASE = [
 
 export default function App() {
   // --- STATE MANAGEMENT ---
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [email, setEmail] = useState('');
@@ -782,6 +789,7 @@ export default function App() {
   };
 
   const resetImportTemplateForm = () => {
+    importParseRequestIdRef.current += 1;
     setImportImagePreview('');
     setImportImageBase64('');
     setImportImageFileName('');
@@ -841,8 +849,10 @@ export default function App() {
   const handleImportImageChange = (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    event.target.value = '';
 
-    importParseRequestIdRef.current += 1;
+    const requestId = importParseRequestIdRef.current + 1;
+    importParseRequestIdRef.current = requestId;
     setImportImagePreview('');
     setImportImageBase64('');
     setImportImageFileName('');
@@ -866,16 +876,19 @@ export default function App() {
 
     const reader = new FileReader();
     reader.onload = () => {
+      if (importParseRequestIdRef.current !== requestId) return;
+
       const dataUrl = String(reader.result || '');
       setImportImagePreview(dataUrl);
       setImportImageBase64(dataUrl.split(',')[1] || '');
       setImportImageFileName(file.name);
     };
     reader.onerror = () => {
+      if (importParseRequestIdRef.current !== requestId) return;
+
       setImportTemplateError('Could not read this image. Try a clearer image or enter the template manually.');
     };
     reader.readAsDataURL(file);
-    event.target.value = '';
   };
 
   const parseImportedTemplateImage = async () => {
@@ -1291,11 +1304,11 @@ export default function App() {
   };
 
   // --- RENDER FLOW ---
-  if (authLoading) return <div style={styles.appContainer}><p style={{padding: '50px', color: THEME.textSecondary}}>Loading...</p></div>;
+  if (authLoading) return <div className="app-shell app-shell-loading" style={styles.appContainer}><p style={{padding: '50px', color: THEME.textSecondary}}>Loading...</p></div>;
 
   if (!user) {
     return (
-      <div style={{...styles.appContainer, justifyContent: 'center', alignItems: 'center', padding: '40px'}}>
+      <div className="app-shell auth-screen" style={{...styles.appContainer, justifyContent: 'center', alignItems: 'center', padding: '40px'}}>
         <h1 style={styles.authTitle}>Elite Tracker</h1>
         <input type="email" placeholder="Email" style={styles.authInput} onChange={(e) => setEmail(e.target.value)} />
         <input type="password" placeholder="Password" style={styles.authInput} onChange={(e) => setPassword(e.target.value)} />
@@ -1305,27 +1318,32 @@ export default function App() {
     );
   }
 
+  const profileInitial = (user.email || 'U').trim().charAt(0).toUpperCase();
+
   return (
-    <div style={styles.appContainer}>
-      {/* GLOBAL HEADER & MENU BUTTON */}
+    <div className="app-shell" style={styles.appContainer}>
+      {/* GLOBAL HEADER */}
       {!isWorkoutActive && (
-        <header style={styles.globalHeader}>
+        <header className="app-header" style={styles.globalHeader}>
           <h1 style={styles.brandTitle}>
             Elite Tracker
             <span style={styles.brandMarker}></span>
           </h1>
-          <button className="mu-icon-button" onClick={() => setIsMenuOpen(true)} style={styles.menuButton}>☰</button>
+          <div style={styles.headerProfileChip} aria-label="Signed in profile">
+            <FitnessIcon name="notifications" size={20} />
+            <span style={styles.headerProfileInitial}>{profileInitial}</span>
+          </div>
         </header>
       )}
 
-      <div style={styles.contentScroll}>
+      <div className="content-scroll" style={styles.contentScroll}>
         
         {/* WORKOUT TAB */}
         {activeTab === 'workout' && (
-          <div>
+          <div className="tab-scene">
             {!isWorkoutActive ? (
               <div style={styles.workoutHome}>
-                <div style={styles.startPanel}>
+                <div className="workout-hero premium-card" style={styles.startPanel}>
                   <p style={styles.eyebrow}>Workout</p>
                   <h2 style={{fontSize: '28px', margin: '0 0 10px 0', color: THEME.textPrimary}}>Ready to train?</h2>
                   <p style={{color: THEME.textSecondary, margin: '0 0 26px 0', maxWidth: '320px'}}>Track the session cleanly, keep the numbers honest.</p>
@@ -1356,7 +1374,7 @@ export default function App() {
                   ) : (
                     <div style={styles.templateCardList}>
                       {workoutTemplates.map(template => (
-                        <div key={template.id} style={styles.templateCard}>
+                        <div className="template-card" key={template.id} style={styles.templateCard}>
                           <div style={styles.templateCardHeader}>
                             <div style={{minWidth: 0}}>
                               <h3 style={styles.templateCardTitle}>{template.name}</h3>
@@ -1389,7 +1407,7 @@ export default function App() {
                   <p style={{textAlign: 'center', color: THEME.textSecondary, marginTop: '40px'}}>Tap below to add your first exercise.</p>
                 ) : (
                   Object.entries(activeWorkout).map(([exercise, sets]) => (
-                    <div key={exercise} style={styles.exerciseBlock}>
+                    <div className="exercise-card" key={exercise} style={styles.exerciseBlock}>
                       <div style={styles.exerciseHeader}><h3 style={styles.exerciseName}>{exercise}</h3></div>
                       <div style={styles.tableHeader}>
                         <span style={styles.setCol}>Set</span>
@@ -1399,7 +1417,7 @@ export default function App() {
                         <span style={styles.checkCol}>✓</span>
                       </div>
                       {sets.map((set, idx) => (
-                        <div key={idx} style={{
+                        <div className={set.completed ? 'completed-set' : ''} key={idx} style={{
                           ...styles.setRow,
                           backgroundColor: set.completed ? THEME.successSoft : 'transparent',
                           borderColor: set.completed ? 'rgba(52, 199, 89, 0.38)' : 'transparent'
@@ -1436,7 +1454,7 @@ export default function App() {
 
         {/* HISTORY TAB */}
         {activeTab === 'history' && (
-          <div style={{padding: '20px'}}>
+          <div className="tab-scene" style={{padding: '20px'}}>
             <h1 style={styles.pageTitle}>Your Progress</h1>
             
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
@@ -1478,7 +1496,7 @@ export default function App() {
               </p>
             ) : (
               workoutHistory.filter(entry => !selectedDate || entry.date.includes(selectedDate)).map(entry => (
-                <div key={entry.id} style={styles.historyCard}>
+                <div className="history-card" key={entry.id} style={styles.historyCard}>
                   <div style={styles.historyHeader}>
                     <div>
                       <p style={{margin: 0, fontWeight: 'bold', fontSize: '18px'}}>{entry.date}</p>
@@ -1510,10 +1528,10 @@ export default function App() {
 
         {/* METABOLISM & TREND TAB */}
         {activeTab === 'tdee' && (
-          <div style={{padding: '20px'}}>
+          <div className="tab-scene" style={{padding: '20px'}}>
             <h2 style={styles.pageTitle}>Metabolism Engine</h2>
             
-            <div style={styles.dashboardCard}>
+            <div className="panel-card" style={styles.dashboardCard}>
               <p style={{color: THEME.textSecondary, margin: '0 0 10px 0'}}>Actual TDEE (Dynamic):</p>
               <p style={{fontSize: '36px', fontWeight: '900', color: THEME.accentGold, margin: 0, letterSpacing: '0'}}>
                 {dynamicTDEE ? `${dynamicTDEE} kcal` : "Collecting data..."}
@@ -1522,7 +1540,7 @@ export default function App() {
             </div>
 
             {dailyLogs.length >= 2 && (
-              <div style={styles.sectionCard}>
+              <div className="panel-card" style={styles.sectionCard}>
                 <h3 style={{margin: '0 0 15px 0', fontSize: '18px', color: THEME.textPrimary}}>Weight Trend Analysis</h3>
                 <div style={{height: '250px', width: '100%'}}>
                   <ResponsiveContainer width="100%" height="100%">
@@ -1558,7 +1576,7 @@ export default function App() {
               <p style={{color: THEME.textSecondary, textAlign: 'center'}}>No history available.</p>
             ) : (
               dailyLogs.map(log => (
-                <div key={log.id} style={styles.historyCard}>
+                <div className="history-card" key={log.id} style={styles.historyCard}>
                   <div style={{...styles.historyHeader, borderBottom: log.foods && log.foods.length > 0 ? `1px solid ${THEME.border}` : 'none'}}>
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', width: '100%'}}>
                       <div>
@@ -1594,7 +1612,7 @@ export default function App() {
 
         {/* NUTRITION SEARCH TAB */}
         {activeTab === 'food' && (
-          <div style={{padding: '20px'}}>
+          <div className="tab-scene" style={{padding: '20px'}}>
             <h2 style={styles.pageTitle}>Nutrition Search</h2>
             
             <div style={{display: 'flex', gap: '10px', marginBottom: '15px'}}>
@@ -1612,7 +1630,7 @@ export default function App() {
             </div>
 
             {foodResults.length > 0 ? (
-              <div style={styles.resultsPanel}>
+              <div className="panel-card" style={styles.resultsPanel}>
                 {foodResults.map((food) => (
                   <div key={food.id} style={styles.foodResultRow}>
                     <div style={{textAlign: 'left', flex: 1}}>
@@ -1636,9 +1654,9 @@ export default function App() {
 
         {/* PROFILE / COACHING TAB */}
         {activeTab === 'you' && (
-          <div style={{padding: '20px', textAlign: 'center'}}>
+          <div className="tab-scene" style={{padding: '20px', textAlign: 'center'}}>
             <h2 style={styles.pageTitle}>AI Coaching Setup</h2>
-            <div style={{...styles.sectionCard, textAlign: 'left'}}>
+            <div className="panel-card" style={{...styles.sectionCard, textAlign: 'left'}}>
               
               <div style={{display: 'flex', gap: '10px', marginBottom: '10px'}}>
                 <div style={{flex: 1}}>
@@ -1698,7 +1716,7 @@ export default function App() {
             </div>
 
             <h2 style={{fontSize: '24px', marginBottom: '40px'}}>Account Details</h2>
-            <div style={styles.sectionCard}>
+            <div className="panel-card" style={styles.sectionCard}>
               <p style={{color: THEME.textSecondary, margin: '0 0 10px 0'}}>Logged in as:</p>
               <p style={{fontSize: '18px', fontWeight: 'bold', margin: 0}}>{user.email}</p>
             </div>
@@ -1707,9 +1725,36 @@ export default function App() {
         )}
       </div> 
 
+      {!isWorkoutActive && (
+        <nav className="bottom-nav" aria-label="Primary navigation">
+          {MAIN_NAV_ITEMS.map(item => {
+            const isActive = activeTab === item.id;
+
+            return (
+              <button
+                key={item.id}
+                type="button"
+                className={[
+                  'bottom-nav__item',
+                  item.isPrimary ? 'bottom-nav__item--primary' : '',
+                  isActive ? 'bottom-nav__item--active' : '',
+                ].filter(Boolean).join(' ')}
+                onClick={() => setActiveTab(item.id)}
+                aria-current={isActive ? 'page' : undefined}
+              >
+                <span className="bottom-nav__icon">
+                  <FitnessIcon name={item.icon} size={item.isPrimary ? 27 : 24} />
+                </span>
+                <span className="bottom-nav__label">{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      )}
+
       {/* EXERCISE MODAL */}
       {showExerciseModal && (
-        <div style={styles.modalOverlay}>
+        <div className="modal-surface" style={styles.modalOverlay}>
           <div style={styles.modalHeader}>
             <span className="mu-icon-button" onClick={() => { setShowExerciseModal(false); setShowCreateExerciseModal(false); setSelectedExerciseHistoryName(''); }} style={styles.modalClose}>✕</span>
             <h2 style={{margin: 0, fontSize: '18px'}}>Add Exercises</h2>
@@ -1735,7 +1780,7 @@ export default function App() {
 
       {/* CREATE EXERCISE MODAL */}
       {showCreateExerciseModal && (
-        <div style={{...styles.modalOverlay, zIndex: 150}}>
+        <div className="modal-surface" style={{...styles.modalOverlay, zIndex: 150}}>
           <div style={styles.modalHeader}>
             <span style={{width: '24px'}}></span>
             <h2 style={{margin: 0, fontSize: '18px'}}>Create Exercise</h2>
@@ -1805,7 +1850,7 @@ export default function App() {
 
       {/* CREATE / EDIT TEMPLATE MODAL */}
 	      {showTemplateModal && (
-	        <div style={{...styles.modalOverlay, zIndex: 140}}>
+	        <div className="modal-surface" style={{...styles.modalOverlay, zIndex: 140}}>
           <div style={styles.modalHeader}>
             <span className="mu-icon-button" onClick={closeTemplateModal} style={styles.modalClose}>✕</span>
             <h2 style={{margin: 0, fontSize: '18px'}}>{editingTemplateId ? 'Edit Template' : 'Create Template'}</h2>
@@ -1942,7 +1987,7 @@ export default function App() {
 
 	      {/* IMPORT TEMPLATE FROM IMAGE MODAL */}
 	      {showImportTemplateModal && (
-	        <div style={{...styles.modalOverlay, zIndex: 140}}>
+	        <div className="modal-surface" style={{...styles.modalOverlay, zIndex: 140}}>
 	          <div style={styles.modalHeader}>
 	            <span className="mu-icon-button" onClick={closeImportTemplateModal} style={styles.modalClose}>✕</span>
 	            <h2 style={{margin: 0, fontSize: '18px'}}>Import Template From Image</h2>
@@ -2152,7 +2197,7 @@ export default function App() {
 	      {/* EXERCISE HISTORY MODAL */}
       {selectedExerciseHistoryName && (
         <div style={styles.exerciseHistoryOverlay}>
-          <div style={styles.exerciseHistoryModal}>
+          <div className="modal-surface" style={styles.exerciseHistoryModal}>
             <div style={styles.modalHeader}>
               <span className="mu-icon-button" onClick={() => setSelectedExerciseHistoryName('')} style={styles.modalClose}>✕</span>
               <h2 style={{margin: 0, fontSize: '18px'}}>Exercise History: {selectedExerciseHistoryName}</h2>
@@ -2231,38 +2276,9 @@ export default function App() {
         </div>
       )}
 
-      {/* SLIDE-IN MENU OVERLAY */}
-      {isMenuOpen && (
-        <div style={styles.menuOverlay} onClick={() => setIsMenuOpen(false)}>
-          <div style={styles.menuContent} onClick={(e) => e.stopPropagation()}>
-            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '40px', padding: '0 20px'}}>
-              <h2 style={{margin: 0, color: THEME.textSecondary, fontSize: '14px', letterSpacing: '2px'}}>NAVIGATION</h2>
-              <span className="mu-icon-button" onClick={() => setIsMenuOpen(false)} style={styles.closeMenuBtn}>✕</span>
-            </div>
-            
-            {['Workout', 'History', 'TDEE', 'Food', 'You'].map(tab => (
-              <button 
-                className="mu-menu-item"
-                key={tab} 
-                onClick={() => { setActiveTab(tab.toLowerCase()); setIsMenuOpen(false); }} 
-                style={{
-                  ...styles.menuItem, 
-                  color: activeTab === tab.toLowerCase() ? THEME.textPrimary : THEME.textSecondary,
-                  backgroundColor: activeTab === tab.toLowerCase() ? THEME.redSoft : 'transparent',
-                  borderLeft: activeTab === tab.toLowerCase() ? `4px solid ${THEME.primaryRed}` : '4px solid transparent',
-                  paddingLeft: activeTab === tab.toLowerCase() ? '16px' : '20px'
-                }}
-              >
-                {tab}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* FOOD CUSTOMIZATION MODAL */}
       {selectedFood && (
-        <div style={styles.modalOverlay}>
+        <div className="modal-surface" style={styles.modalOverlay}>
           <div style={styles.modalHeader}>
             <span className="mu-icon-button" onClick={() => setSelectedFood(null)} style={styles.modalClose}>✕</span>
             <h2 style={{margin: 0, fontSize: '18px'}}>Log Food</h2>
@@ -2327,87 +2343,102 @@ const styles = {
   appContainer: {
     display: 'flex',
     flexDirection: 'column',
-    height: '100vh',
-    backgroundColor: THEME.bgBlack,
+    height: '100dvh',
+    minHeight: '100svh',
+    background:
+      'radial-gradient(circle at 18% -8%, rgba(218, 41, 28, 0.22), transparent 34%), radial-gradient(circle at 92% 4%, rgba(242, 201, 76, 0.10), transparent 30%), linear-gradient(180deg, #08080A 0%, #050506 50%, #0A0A0D 100%)',
     color: THEME.textPrimary,
-    fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif',
+    fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif',
   },
-  contentScroll: { flex: 1, overflowY: 'auto', paddingBottom: '20px' },
+  contentScroll: {
+    flex: 1,
+    overflowY: 'auto',
+    paddingBottom: '132px',
+    minHeight: 0,
+  },
   authTitle: {
     color: THEME.textPrimary,
-    fontSize: '34px',
-    margin: '0 0 40px 0',
+    fontSize: 'clamp(38px, 8vw, 64px)',
+    margin: '0 0 28px 0',
     fontWeight: '900',
     letterSpacing: '0',
-    textDecoration: `underline ${THEME.primaryRed}`,
-    textUnderlineOffset: '8px',
+    textAlign: 'center',
+    textShadow: '0 18px 42px rgba(0, 0, 0, 0.52)',
   },
   authInput: {
     width: '100%',
-    padding: '15px',
+    padding: '15px 16px',
     marginBottom: '15px',
-    backgroundColor: THEME.bgDark,
+    backgroundColor: 'rgba(255, 255, 255, 0.065)',
     color: THEME.textPrimary,
     border: `1px solid ${THEME.border}`,
-    borderRadius: '10px',
+    borderRadius: '16px',
     fontSize: '16px',
     outline: 'none',
     boxSizing: 'border-box',
-    transition: 'border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease',
+    boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.05)',
+    transition: 'border-color 0.26s cubic-bezier(.2,.8,.2,1), box-shadow 0.26s cubic-bezier(.2,.8,.2,1), background-color 0.26s cubic-bezier(.2,.8,.2,1)',
   },
   authButton: {
     width: '100%',
-    padding: '15px',
+    padding: '15px 18px',
     backgroundColor: THEME.primaryRed,
     color: THEME.textPrimary,
     border: `1px solid ${THEME.primaryRed}`,
-    borderRadius: '10px',
+    borderRadius: '18px',
     fontSize: '16px',
-    fontWeight: '800',
+    fontWeight: '900',
     cursor: 'pointer',
+    boxShadow: '0 20px 44px rgba(218, 41, 28, 0.28)',
   },
   secondaryButton: {
-    backgroundColor: THEME.cardBg,
-    color: THEME.primaryRed,
-    border: `1px solid ${THEME.redMedium}`,
+    backgroundColor: 'rgba(255, 255, 255, 0.055)',
+    color: THEME.textPrimary,
+    border: `1px solid ${THEME.border}`,
+    boxShadow: 'none',
   },
   timerText: {
-    fontSize: '54px',
+    fontSize: 'clamp(56px, 14vw, 86px)',
     fontWeight: '900',
     textAlign: 'center',
-    margin: '8px 0 30px 0',
+    margin: '18px 0 30px 0',
     color: THEME.textPrimary,
     letterSpacing: '0',
-    textShadow: '0 0 26px rgba(218, 41, 28, 0.42)',
+    textShadow: '0 0 34px rgba(218, 41, 28, 0.46)',
+    animation: 'pulseGlow 2.8s ease-in-out infinite',
   },
   topBar: {
     display: 'flex',
     justifyContent: 'space-between',
-    padding: '20px',
+    padding: '18px 22px',
     alignItems: 'center',
-    borderBottom: `1px solid ${THEME.border}`,
-    backgroundColor: THEME.bgBlack,
+    borderBottom: `1px solid rgba(255, 255, 255, 0.10)`,
+    background: 'rgba(5, 5, 6, 0.82)',
+    backdropFilter: 'blur(18px)',
+    position: 'sticky',
+    top: 0,
+    zIndex: 30,
   },
   mainBtn: {
     width: '100%',
     padding: '16px',
-    backgroundColor: THEME.primaryRed,
+    background: 'linear-gradient(135deg, #FF3B30 0%, #DA291C 52%, #9F160F 100%)',
     color: THEME.textPrimary,
-    borderRadius: '30px',
-    fontWeight: '800',
-    border: `1px solid ${THEME.primaryRed}`,
+    borderRadius: '999px',
+    fontWeight: '900',
+    border: '1px solid rgba(255, 255, 255, 0.14)',
     fontSize: '16px',
     cursor: 'pointer',
-    boxShadow: '0 12px 24px rgba(218, 41, 28, 0.22)',
+    boxShadow: '0 20px 44px rgba(218, 41, 28, 0.28)',
   },
   discardBtn: {
     width: '100%',
     padding: '16px',
-    backgroundColor: THEME.cardBg,
+    backgroundColor: 'rgba(255, 69, 58, 0.10)',
     color: THEME.dangerRed,
-    borderRadius: '30px',
-    fontWeight: '800',
-    border: `1px solid ${THEME.dangerSoft}`,
+    borderRadius: '999px',
+    fontWeight: '900',
+    border: `1px solid rgba(255, 69, 58, 0.24)`,
     fontSize: '16px',
     cursor: 'pointer',
   },
@@ -2415,7 +2446,7 @@ const styles = {
     backgroundColor: THEME.dangerSoft,
     color: THEME.dangerRed,
     border: `1px solid rgba(255, 69, 58, 0.24)`,
-    borderRadius: '8px',
+    borderRadius: '999px',
     padding: '8px 12px',
     fontSize: '14px',
     fontWeight: '800',
@@ -2424,21 +2455,24 @@ const styles = {
   calendarContainer: {
     display: 'flex',
     justifyContent: 'space-between',
-    backgroundColor: THEME.bgDark,
-    padding: '15px',
-    borderRadius: '12px',
-    marginBottom: '20px',
+    gap: '8px',
+    background: 'rgba(255, 255, 255, 0.055)',
+    padding: '12px',
+    borderRadius: '22px',
+    marginBottom: '22px',
     border: `1px solid ${THEME.border}`,
     boxShadow: THEME.shadow,
+    backdropFilter: 'blur(14px)',
   },
-  calendarDay: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', width: '40px', height: '55px', borderRadius: '8px' },
+  calendarDay: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, minWidth: '38px', height: '58px', borderRadius: '16px' },
   historyCard: {
-    backgroundColor: THEME.cardBg,
+    background: 'linear-gradient(160deg, rgba(255, 255, 255, 0.085), rgba(255, 255, 255, 0.04))',
     padding: '20px',
-    borderRadius: '12px',
-    marginBottom: '15px',
+    borderRadius: '24px',
+    marginBottom: '16px',
     border: `1px solid ${THEME.border}`,
     boxShadow: THEME.shadow,
+    backdropFilter: 'blur(16px)',
   },
   historyHeader: {
     display: 'flex',
@@ -2454,15 +2488,19 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: '15px 20px',
-    backgroundColor: THEME.bgBlack,
-    borderBottom: `1px solid ${THEME.border}`,
+    padding: '14px clamp(16px, 3vw, 26px)',
+    margin: '10px clamp(10px, 2vw, 18px) 0',
+    background: 'rgba(14, 15, 18, 0.72)',
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '24px',
     zIndex: 40,
-    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.3)',
+    position: 'sticky',
+    top: '10px',
+    boxShadow: '0 18px 42px rgba(0, 0, 0, 0.38)',
   },
   brandTitle: {
     margin: 0,
-    fontSize: '20px',
+    fontSize: '22px',
     color: THEME.textPrimary,
     fontWeight: '900',
     letterSpacing: '0',
@@ -2472,56 +2510,62 @@ const styles = {
     gap: '5px',
   },
   brandMarker: {
-    width: '48px',
-    height: '3px',
+    width: '62px',
+    height: '4px',
     borderRadius: '999px',
-    backgroundColor: THEME.primaryRed,
+    background: `linear-gradient(90deg, ${THEME.primaryRed}, ${THEME.accentGold})`,
     boxShadow: '0 0 14px rgba(218, 41, 28, 0.55)',
   },
-  menuButton: { background: 'transparent', border: 'none', color: THEME.textPrimary, fontSize: '28px', cursor: 'pointer', padding: 0 },
-  menuOverlay: {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: THEME.overlay,
-    zIndex: 200,
-    display: 'flex',
-    justifyContent: 'flex-end',
-    backdropFilter: 'blur(5px)',
+  headerProfileChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '10px',
+    minHeight: '44px',
+    padding: '6px 7px 6px 12px',
+    color: THEME.textSecondary,
+    background: 'rgba(255, 255, 255, 0.065)',
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '999px',
+    boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.06)',
   },
-  menuContent: {
-    backgroundColor: THEME.cardBg,
-    width: '270px',
-    height: '100%',
-    padding: '22px 0',
-    display: 'flex',
-    flexDirection: 'column',
-    borderLeft: `1px solid ${THEME.border}`,
-    boxShadow: '-18px 0 36px rgba(0, 0, 0, 0.46)',
+  headerProfileInitial: {
+    width: '32px',
+    height: '32px',
+    display: 'inline-grid',
+    placeItems: 'center',
+    color: THEME.textPrimary,
+    background: `linear-gradient(135deg, ${THEME.primaryRedHover}, ${THEME.primaryRed})`,
+    borderRadius: '50%',
+    fontSize: '13px',
+    fontWeight: '900',
   },
-  closeMenuBtn: { fontSize: '24px', color: THEME.textSecondary, cursor: 'pointer' },
-  menuItem: { background: 'transparent', border: 'none', fontSize: '22px', fontWeight: '800', textAlign: 'left', cursor: 'pointer', padding: '15px 20px', transition: 'all 0.2s', width: '100%' },
 
   pageTitle: {
-    fontSize: '26px',
-    margin: '0 0 20px 0',
+    fontSize: 'clamp(28px, 6vw, 42px)',
+    margin: '4px 0 24px 0',
     textAlign: 'center',
     color: THEME.textPrimary,
     fontWeight: '900',
     letterSpacing: '0',
   },
   workoutHome: {
-    padding: '24px 16px 34px 16px',
+    padding: 'clamp(18px, 4vw, 30px) clamp(14px, 4vw, 30px) 38px',
   },
   startPanel: {
     display: 'flex',
     flexDirection: 'column',
     justifyContent: 'center',
-    alignItems: 'center',
-    padding: '30px 10px 26px 10px',
-    textAlign: 'center',
+    alignItems: 'flex-start',
+    minHeight: '260px',
+    padding: '32px min(36vw, 190px) 32px clamp(22px, 5vw, 42px)',
+    textAlign: 'left',
+    background:
+      'linear-gradient(135deg, rgba(218, 41, 28, 0.30), rgba(255, 255, 255, 0.075) 42%, rgba(242, 201, 76, 0.10)), linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.035))',
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '32px',
+    boxShadow: THEME.shadow,
+    marginBottom: '28px',
+    backdropFilter: 'blur(18px)',
   },
   eyebrow: {
     color: THEME.accentGold,
@@ -2532,35 +2576,37 @@ const styles = {
     textTransform: 'uppercase',
   },
   dashboardCard: {
-    backgroundColor: THEME.cardBg,
-    padding: '22px',
-    borderRadius: '12px',
+    background: 'linear-gradient(160deg, rgba(255, 255, 255, 0.095), rgba(255, 255, 255, 0.04))',
+    padding: '24px',
+    borderRadius: '26px',
     marginBottom: '30px',
     textAlign: 'center',
     border: `1px solid ${THEME.border}`,
     boxShadow: THEME.shadow,
+    backdropFilter: 'blur(16px)',
   },
   sectionCard: {
-    backgroundColor: THEME.cardBg,
+    background: 'linear-gradient(160deg, rgba(255, 255, 255, 0.085), rgba(255, 255, 255, 0.038))',
     padding: '20px',
-    borderRadius: '12px',
+    borderRadius: '24px',
     marginBottom: '30px',
     border: `1px solid ${THEME.border}`,
     boxShadow: THEME.shadow,
+    backdropFilter: 'blur(16px)',
   },
   inputLabel: { fontSize: '12px', color: THEME.textSecondary, fontWeight: '700' },
   formLabel: { display: 'block', margin: '0 0 8px 0', color: THEME.textPrimary, fontSize: '14px', fontWeight: '800' },
   macroSummaryCard: {
     marginTop: '20px',
-    padding: '16px',
-    backgroundColor: THEME.bgDark,
-    borderRadius: '10px',
+    padding: '18px',
+    background: 'rgba(242, 201, 76, 0.08)',
+    borderRadius: '20px',
     border: `1px solid rgba(242, 201, 76, 0.38)`,
   },
   resultsPanel: {
-    backgroundColor: THEME.cardBg,
-    borderRadius: '12px',
-    padding: '10px',
+    background: 'linear-gradient(160deg, rgba(255, 255, 255, 0.085), rgba(255, 255, 255, 0.04))',
+    borderRadius: '24px',
+    padding: '12px',
     maxHeight: '60vh',
     overflowY: 'auto',
     border: `1px solid ${THEME.border}`,
@@ -2570,14 +2616,14 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: '14px 2px',
+    padding: '15px 4px',
     borderBottom: `1px solid ${THEME.border}`,
   },
   smallSecondaryBtn: {
-    backgroundColor: THEME.bgDark,
-    color: THEME.primaryRed,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    color: THEME.textPrimary,
     border: `1px solid ${THEME.redMedium}`,
-    borderRadius: '8px',
+    borderRadius: '999px',
     padding: '6px 11px',
     fontWeight: '800',
     cursor: 'pointer',
@@ -2589,9 +2635,10 @@ const styles = {
   templateSectionHeader: {
     display: 'flex',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: '12px',
-    marginBottom: '14px',
+    alignItems: 'flex-start',
+    gap: '14px',
+    marginBottom: '16px',
+    flexWrap: 'wrap',
   },
   templateHeaderActions: {
     display: 'flex',
@@ -2603,28 +2650,28 @@ const styles = {
   templateSectionTitle: {
     margin: 0,
     color: THEME.textPrimary,
-    fontSize: '22px',
+    fontSize: '26px',
     fontWeight: '900',
   },
   createTemplateBtn: {
-    backgroundColor: THEME.cardBg,
-    color: THEME.primaryRed,
+    backgroundColor: 'rgba(218, 41, 28, 0.16)',
+    color: THEME.textPrimary,
     border: `1px solid ${THEME.redMedium}`,
-    borderRadius: '10px',
-    padding: '11px 13px',
+    borderRadius: '999px',
+    padding: '11px 15px',
     fontSize: '14px',
-    fontWeight: '800',
+    fontWeight: '900',
     cursor: 'pointer',
     flexShrink: 0,
   },
   importTemplateBtn: {
-    backgroundColor: THEME.bgDark,
+    backgroundColor: 'rgba(255, 255, 255, 0.065)',
     color: THEME.textPrimary,
     border: `1px solid ${THEME.border}`,
-    borderRadius: '10px',
-    padding: '11px 13px',
+    borderRadius: '999px',
+    padding: '11px 15px',
     fontSize: '14px',
-    fontWeight: '800',
+    fontWeight: '900',
     cursor: 'pointer',
     flexShrink: 0,
   },
@@ -2635,23 +2682,24 @@ const styles = {
     fontWeight: '800',
   },
   templateEmptyState: {
-    backgroundColor: THEME.cardBg,
+    background: 'rgba(255, 255, 255, 0.055)',
     border: `1px solid ${THEME.border}`,
-    borderRadius: '12px',
-    padding: '18px',
+    borderRadius: '22px',
+    padding: '20px',
     boxShadow: THEME.shadow,
   },
   templateCardList: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
-    gap: '12px',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))',
+    gap: '14px',
   },
   templateCard: {
-    backgroundColor: THEME.cardBg,
+    background: 'linear-gradient(160deg, rgba(255, 255, 255, 0.095), rgba(255, 255, 255, 0.038))',
     border: `1px solid ${THEME.border}`,
-    borderRadius: '12px',
-    padding: '16px',
+    borderRadius: '24px',
+    padding: '18px',
     boxShadow: THEME.shadow,
+    backdropFilter: 'blur(16px)',
   },
   templateCardHeader: {
     display: 'flex',
@@ -2662,7 +2710,7 @@ const styles = {
   templateCardTitle: {
     margin: 0,
     color: THEME.textPrimary,
-    fontSize: '18px',
+    fontSize: '19px',
     fontWeight: '900',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -2684,23 +2732,23 @@ const styles = {
     display: 'grid',
     gridTemplateColumns: '1.2fr 1fr 1fr',
     gap: '8px',
-    marginTop: '16px',
+    marginTop: '18px',
   },
   templateStartBtn: {
-    backgroundColor: THEME.primaryRed,
+    background: 'linear-gradient(135deg, #FF3B30, #DA291C)',
     color: THEME.textPrimary,
-    border: `1px solid ${THEME.primaryRed}`,
-    borderRadius: '9px',
-    padding: '10px 8px',
+    border: '1px solid rgba(255, 255, 255, 0.14)',
+    borderRadius: '999px',
+    padding: '11px 8px',
     fontSize: '13px',
     fontWeight: '900',
     cursor: 'pointer',
   },
   templateActionBtn: {
-    backgroundColor: THEME.bgDark,
+    backgroundColor: 'rgba(255, 255, 255, 0.055)',
     color: THEME.textSecondary,
     border: `1px solid ${THEME.border}`,
-    borderRadius: '9px',
+    borderRadius: '999px',
     padding: '10px 8px',
     fontSize: '13px',
     fontWeight: '800',
@@ -2710,22 +2758,22 @@ const styles = {
     backgroundColor: THEME.dangerSoft,
     color: THEME.dangerRed,
     border: `1px solid rgba(255, 69, 58, 0.24)`,
-    borderRadius: '9px',
+    borderRadius: '999px',
     padding: '10px 8px',
     fontSize: '13px',
     fontWeight: '800',
     cursor: 'pointer',
   },
   templateModalBody: {
-    padding: '22px 20px',
+    padding: '24px clamp(18px, 4vw, 28px)',
     overflowY: 'auto',
     flex: 1,
   },
   templateLibraryPanel: {
-    backgroundColor: THEME.cardBg,
+    background: 'rgba(255, 255, 255, 0.055)',
     border: `1px solid ${THEME.border}`,
-    borderRadius: '12px',
-    padding: '14px',
+    borderRadius: '22px',
+    padding: '16px',
     marginBottom: '18px',
   },
   templateLibraryHeader: {
@@ -2808,10 +2856,10 @@ const styles = {
     marginBottom: '16px',
   },
   templateExerciseEditorCard: {
-    backgroundColor: THEME.cardBg,
+    background: 'rgba(255, 255, 255, 0.055)',
     border: `1px solid ${THEME.border}`,
-    borderRadius: '12px',
-    padding: '14px',
+    borderRadius: '20px',
+    padding: '15px',
   },
   templateExerciseEditorTop: {
     display: 'flex',
@@ -2836,7 +2884,7 @@ const styles = {
     backgroundColor: THEME.dangerSoft,
     color: THEME.dangerRed,
     border: `1px solid rgba(255, 69, 58, 0.24)`,
-    borderRadius: '8px',
+    borderRadius: '999px',
     padding: '8px 10px',
     fontSize: '12px',
     fontWeight: '800',
@@ -2856,17 +2904,18 @@ const styles = {
   },
 
   importTemplateModalBody: {
-    padding: '22px 20px',
+    padding: '24px clamp(18px, 4vw, 28px)',
     overflowY: 'auto',
     flex: 1,
   },
   importUploadPanel: {
-    backgroundColor: THEME.cardBg,
+    background: 'linear-gradient(160deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.04))',
     border: `1px solid ${THEME.border}`,
-    borderRadius: '12px',
-    padding: '16px',
+    borderRadius: '24px',
+    padding: '18px',
     marginBottom: '18px',
     boxShadow: THEME.shadow,
+    backdropFilter: 'blur(16px)',
   },
   importUploadTop: {
     display: 'flex',
@@ -2879,20 +2928,20 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: '44px',
-    backgroundColor: THEME.bgDark,
+    backgroundColor: 'rgba(255, 255, 255, 0.065)',
     color: THEME.textPrimary,
     border: `1px solid ${THEME.border}`,
-    borderRadius: '10px',
+    borderRadius: '999px',
     padding: '0 14px',
     fontWeight: '900',
     cursor: 'pointer',
   },
   parseImageBtn: {
     minHeight: '44px',
-    backgroundColor: THEME.primaryRed,
+    background: 'linear-gradient(135deg, #FF3B30, #DA291C)',
     color: THEME.textPrimary,
-    border: `1px solid ${THEME.primaryRed}`,
-    borderRadius: '10px',
+    border: '1px solid rgba(255, 255, 255, 0.14)',
+    borderRadius: '999px',
     padding: '0 14px',
     fontWeight: '900',
     cursor: 'pointer',
@@ -2912,9 +2961,9 @@ const styles = {
   },
   importImagePreviewWrap: {
     marginTop: '14px',
-    backgroundColor: THEME.bgDark,
+    backgroundColor: 'rgba(0, 0, 0, 0.28)',
     border: `1px solid ${THEME.border}`,
-    borderRadius: '12px',
+    borderRadius: '22px',
     overflow: 'hidden',
     maxHeight: '280px',
     display: 'flex',
@@ -2957,10 +3006,10 @@ const styles = {
     marginBottom: '16px',
   },
   importReviewCard: {
-    backgroundColor: THEME.cardBg,
+    background: 'rgba(255, 255, 255, 0.055)',
     border: `1px solid ${THEME.border}`,
-    borderRadius: '12px',
-    padding: '14px',
+    borderRadius: '20px',
+    padding: '15px',
     boxShadow: THEME.shadow,
   },
   importReviewCardTop: {
@@ -3008,7 +3057,7 @@ const styles = {
     gridColumn: '1 / -1',
   },
 
-  historyExerciseBlock: { marginTop: '10px', backgroundColor: THEME.bgDark, borderRadius: '10px', padding: '12px', border: `1px solid ${THEME.border}` },
+  historyExerciseBlock: { marginTop: '10px', backgroundColor: 'rgba(255, 255, 255, 0.045)', borderRadius: '18px', padding: '14px', border: `1px solid ${THEME.border}` },
   historyExerciseTitle: { margin: '0 0 10px 0', fontSize: '16px', fontWeight: '800', color: THEME.primaryRed },
   historySetRow: { display: 'flex', alignItems: 'center', fontSize: '14px', color: THEME.textSecondary, padding: '6px 0' },
   dottedLine: { flex: 1, borderBottom: `2px dotted ${THEME.border}`, margin: '0 15px', transform: 'translateY(-3px)' },
@@ -3022,18 +3071,22 @@ const styles = {
     backgroundColor: THEME.overlay,
     zIndex: 180,
     display: 'flex',
-    alignItems: 'stretch',
+    alignItems: 'center',
     justifyContent: 'center',
+    padding: 'clamp(0px, 4vw, 28px)',
+    backdropFilter: 'blur(14px)',
   },
   exerciseHistoryModal: {
     width: '100%',
     maxWidth: '720px',
-    height: '100%',
-    backgroundColor: THEME.bgBlack,
+    height: 'min(100%, 900px)',
+    background: 'linear-gradient(180deg, rgba(20, 21, 26, 0.98), rgba(7, 7, 9, 0.98))',
     display: 'flex',
     flexDirection: 'column',
-    borderLeft: `1px solid ${THEME.border}`,
-    borderRight: `1px solid ${THEME.border}`,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '28px',
+    boxShadow: THEME.shadow,
+    overflow: 'hidden',
   },
   exerciseHistoryModalBody: {
     flex: 1,
@@ -3047,10 +3100,10 @@ const styles = {
     marginBottom: '24px',
   },
   exerciseHistoryStatCard: {
-    backgroundColor: THEME.cardBg,
+    background: 'rgba(255, 255, 255, 0.055)',
     border: `1px solid ${THEME.border}`,
-    borderRadius: '10px',
-    padding: '14px',
+    borderRadius: '18px',
+    padding: '15px',
   },
   exerciseHistoryStatLabel: {
     display: 'block',
@@ -3080,10 +3133,10 @@ const styles = {
     paddingBottom: '30px',
   },
   exerciseHistorySessionCard: {
-    backgroundColor: THEME.cardBg,
+    background: 'rgba(255, 255, 255, 0.055)',
     border: `1px solid ${THEME.border}`,
-    borderRadius: '12px',
-    padding: '15px',
+    borderRadius: '20px',
+    padding: '16px',
     boxShadow: THEME.shadow,
   },
   exerciseHistorySessionHeader: {
@@ -3162,17 +3215,18 @@ const styles = {
   },
 
   exerciseBlock: {
-    padding: '16px',
-    margin: '0 16px 18px 16px',
-    backgroundColor: THEME.cardBg,
+    padding: '18px',
+    margin: '0 clamp(14px, 4vw, 30px) 18px',
+    background: 'linear-gradient(160deg, rgba(255, 255, 255, 0.095), rgba(255, 255, 255, 0.04))',
     border: `1px solid ${THEME.border}`,
-    borderRadius: '12px',
+    borderRadius: '24px',
     boxShadow: THEME.shadow,
+    backdropFilter: 'blur(16px)',
   },
   exerciseHeader: { marginBottom: '15px' },
   exerciseName: { margin: '0', fontSize: '18px', fontWeight: '900', color: THEME.textPrimary },
-  tableHeader: { display: 'flex', color: THEME.textSecondary, fontSize: '13px', fontWeight: '700', marginBottom: '10px' },
-  setRow: { display: 'flex', alignItems: 'center', marginBottom: '6px', padding: '5px 0', borderRadius: '8px', border: '1px solid transparent', transition: 'background-color 0.2s ease, border-color 0.2s ease' },
+  tableHeader: { display: 'flex', color: THEME.textSecondary, fontSize: '12px', fontWeight: '900', marginBottom: '10px', textTransform: 'uppercase' },
+  setRow: { display: 'flex', alignItems: 'center', marginBottom: '8px', padding: '7px 0', borderRadius: '16px', border: '1px solid transparent', transition: 'background-color 0.26s cubic-bezier(.2,.8,.2,1), border-color 0.26s cubic-bezier(.2,.8,.2,1), transform 0.26s cubic-bezier(.2,.8,.2,1)' },
   setCol: { flex: 0.5, textAlign: 'center', fontWeight: '800', color: THEME.textSecondary },
   prevCol: { flex: 1, textAlign: 'center', color: THEME.textSecondary, fontSize: '14px' },
   inputColTitle: { flex: 1, textAlign: 'center' },
@@ -3180,10 +3234,10 @@ const styles = {
   checkCol: { flex: 0.5, display: 'flex', justifyContent: 'center' },
   inputField: {
     width: '100%',
-    backgroundColor: THEME.bgDark,
+    backgroundColor: 'rgba(0, 0, 0, 0.22)',
     color: THEME.textPrimary,
     border: `1px solid ${THEME.border}`,
-    borderRadius: '8px',
+    borderRadius: '14px',
     padding: '10px 0',
     textAlign: 'center',
     fontSize: '16px',
@@ -3191,15 +3245,34 @@ const styles = {
     outline: 'none',
     boxSizing: 'border-box',
   },
-  checkButton: { width: '32px', height: '32px', borderRadius: '50%', border: `1px solid ${THEME.border}`, display: 'flex', justifyContent: 'center', alignItems: 'center', cursor: 'pointer', fontSize: '14px', fontWeight: '900' },
+  checkButton: { width: '34px', height: '34px', borderRadius: '50%', border: `1px solid ${THEME.border}`, display: 'flex', justifyContent: 'center', alignItems: 'center', cursor: 'pointer', fontSize: '14px', fontWeight: '900', boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.06)' },
   addSetText: { color: THEME.accentGold, fontSize: '15px', fontWeight: '800', cursor: 'pointer', padding: '10px' },
-  modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: THEME.bgBlack, zIndex: 100, display: 'flex', flexDirection: 'column' },
-  modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', borderBottom: `1px solid ${THEME.border}`, backgroundColor: THEME.bgDark },
+  modalOverlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'linear-gradient(180deg, rgba(20, 21, 26, 0.985), rgba(5, 5, 6, 0.985))',
+    zIndex: 100,
+    display: 'flex',
+    flexDirection: 'column',
+    backdropFilter: 'blur(18px)',
+  },
+  modalHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '18px clamp(18px, 4vw, 28px)',
+    borderBottom: `1px solid ${THEME.border}`,
+    background: 'rgba(255, 255, 255, 0.055)',
+    backdropFilter: 'blur(18px)',
+  },
   modalClose: { fontSize: '24px', cursor: 'pointer', color: THEME.textSecondary },
   exercisePickerShell: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 },
-  exerciseSearchPanel: { padding: '20px', borderBottom: `1px solid ${THEME.border}`, display: 'flex', alignItems: 'center', gap: '10px' },
-  exercisePickerList: { overflowY: 'auto', paddingBottom: '50px', flex: 1 },
-  exercisePickerGroup: { padding: '10px 20px' },
+  exerciseSearchPanel: { padding: '20px clamp(18px, 4vw, 28px)', borderBottom: `1px solid ${THEME.border}`, display: 'flex', alignItems: 'center', gap: '10px' },
+  exercisePickerList: { overflowY: 'auto', padding: '4px clamp(18px, 4vw, 28px) 54px', flex: 1 },
+  exercisePickerGroup: { padding: '10px 0' },
   exercisePickerGroupTitle: { color: THEME.accentGold, fontSize: '14px', textTransform: 'uppercase', letterSpacing: '1px', marginTop: '10px' },
   exercisePickerPrimary: { display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 },
   exercisePickerName: { margin: 0, fontSize: '16px', overflow: 'hidden', textOverflow: 'ellipsis' },
@@ -3207,21 +3280,21 @@ const styles = {
   templatePickerShell: { display: 'flex', flexDirection: 'column', minHeight: 0 },
   templatePickerSearchPanel: { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' },
   templateExercisePickerList: { maxHeight: '290px', overflowY: 'auto', paddingRight: '4px' },
-  templatePickerEmptyState: { padding: '18px', backgroundColor: THEME.bgDark, border: `1px solid ${THEME.border}`, borderRadius: '10px', textAlign: 'center' },
+  templatePickerEmptyState: { padding: '18px', backgroundColor: 'rgba(255, 255, 255, 0.045)', border: `1px solid ${THEME.border}`, borderRadius: '18px', textAlign: 'center' },
   searchResultLabel: { margin: '18px 20px 4px 20px', color: THEME.textSecondary, fontSize: '13px', fontWeight: '800' },
-  emptyExerciseState: { margin: '44px 20px 0 20px', padding: '22px', backgroundColor: THEME.cardBg, border: `1px solid ${THEME.border}`, borderRadius: '12px', textAlign: 'center', boxShadow: THEME.shadow },
-  createExerciseIconBtn: { width: '50px', height: '50px', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: THEME.primaryRed, color: THEME.textPrimary, border: `1px solid ${THEME.primaryRed}`, borderRadius: '12px', fontSize: '28px', fontWeight: '900', cursor: 'pointer', boxShadow: '0 12px 24px rgba(218, 41, 28, 0.22)' },
+  emptyExerciseState: { margin: '44px 0 0', padding: '24px', background: 'rgba(255, 255, 255, 0.055)', border: `1px solid ${THEME.border}`, borderRadius: '22px', textAlign: 'center', boxShadow: THEME.shadow },
+  createExerciseIconBtn: { width: '52px', height: '52px', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #FF3B30, #DA291C)', color: THEME.textPrimary, border: '1px solid rgba(255, 255, 255, 0.14)', borderRadius: '18px', fontSize: '28px', fontWeight: '900', cursor: 'pointer', boxShadow: '0 16px 34px rgba(218, 41, 28, 0.28)' },
   emptyCreateExerciseBtn: { width: '48px', height: '48px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', backgroundColor: THEME.primaryRed, color: THEME.textPrimary, border: `1px solid ${THEME.primaryRed}`, borderRadius: '50%', fontSize: '28px', fontWeight: '900', cursor: 'pointer' },
-  exerciseListItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', padding: '15px 0', borderBottom: `1px solid ${THEME.border}`, cursor: 'pointer', transition: 'background-color 0.2s ease, transform 0.2s ease' },
+  exerciseListItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', padding: '14px 12px', borderBottom: `1px solid ${THEME.border}`, borderRadius: '16px', cursor: 'pointer', transition: 'background-color 0.26s cubic-bezier(.2,.8,.2,1), transform 0.26s cubic-bezier(.2,.8,.2,1)' },
   exerciseListActions: { display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 },
-  exerciseHistoryBtn: { backgroundColor: THEME.bgDark, color: THEME.textSecondary, border: `1px solid ${THEME.border}`, borderRadius: '8px', padding: '6px 9px', fontSize: '12px', fontWeight: '800', cursor: 'pointer' },
-  addExerciseIconBtn: { width: '34px', height: '34px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: THEME.redSoft, color: THEME.primaryRed, border: `1px solid ${THEME.redMedium}`, borderRadius: '50%', fontSize: '22px', fontWeight: '800', cursor: 'pointer' },
-  createExerciseModalBody: { padding: '22px 20px', overflowY: 'auto', flex: 1 },
-  textAreaField: { width: '100%', minHeight: '110px', padding: '14px', marginBottom: '15px', backgroundColor: THEME.bgDark, color: THEME.textPrimary, border: `1px solid ${THEME.border}`, borderRadius: '10px', fontSize: '16px', outline: 'none', resize: 'vertical', fontFamily: 'inherit' },
+  exerciseHistoryBtn: { backgroundColor: 'rgba(255, 255, 255, 0.055)', color: THEME.textSecondary, border: `1px solid ${THEME.border}`, borderRadius: '999px', padding: '6px 10px', fontSize: '12px', fontWeight: '800', cursor: 'pointer' },
+  addExerciseIconBtn: { width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: THEME.redSoft, color: THEME.primaryRed, border: `1px solid ${THEME.redMedium}`, borderRadius: '50%', fontSize: '22px', fontWeight: '800', cursor: 'pointer' },
+  createExerciseModalBody: { padding: '24px clamp(18px, 4vw, 28px)', overflowY: 'auto', flex: 1 },
+  textAreaField: { width: '100%', minHeight: '110px', padding: '14px', marginBottom: '15px', backgroundColor: 'rgba(255, 255, 255, 0.065)', color: THEME.textPrimary, border: `1px solid ${THEME.border}`, borderRadius: '16px', fontSize: '16px', outline: 'none', resize: 'vertical', fontFamily: 'inherit' },
   formError: { margin: '0 0 15px 0', color: THEME.dangerRed, fontSize: '13px', fontWeight: '800' },
   createExerciseActions: { display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' },
-  cancelBtn: { flex: 1, padding: '14px', backgroundColor: THEME.cardBg, color: THEME.textSecondary, border: `1px solid ${THEME.border}`, borderRadius: '10px', fontSize: '15px', fontWeight: '800', cursor: 'pointer' },
-  saveExerciseBtn: { flex: 1, padding: '14px', backgroundColor: THEME.primaryRed, color: THEME.textPrimary, border: `1px solid ${THEME.primaryRed}`, borderRadius: '10px', fontSize: '15px', fontWeight: '800', cursor: 'pointer' },
-  seasoningGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', backgroundColor: THEME.cardBg, padding: '15px', borderRadius: '10px', border: `1px solid ${THEME.border}`, marginBottom: '20px' },
+  cancelBtn: { flex: 1, padding: '14px', backgroundColor: 'rgba(255, 255, 255, 0.055)', color: THEME.textSecondary, border: `1px solid ${THEME.border}`, borderRadius: '999px', fontSize: '15px', fontWeight: '800', cursor: 'pointer' },
+  saveExerciseBtn: { flex: 1, padding: '14px', background: 'linear-gradient(135deg, #FF3B30, #DA291C)', color: THEME.textPrimary, border: '1px solid rgba(255, 255, 255, 0.14)', borderRadius: '999px', fontSize: '15px', fontWeight: '900', cursor: 'pointer' },
+  seasoningGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', backgroundColor: 'rgba(255, 255, 255, 0.055)', padding: '16px', borderRadius: '18px', border: `1px solid ${THEME.border}`, marginBottom: '20px' },
   navArrow: { backgroundColor: 'transparent', color: THEME.primaryRed, border: 'none', fontSize: '14px', fontWeight: '800', cursor: 'pointer', transition: 'opacity 0.2s, color 0.2s' }
 };

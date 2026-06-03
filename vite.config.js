@@ -56,65 +56,70 @@ const sendJson = (res, statusCode, payload) => {
   res.end(JSON.stringify(payload))
 }
 
+const handleParseWorkoutImageRequest = async (req, res) => {
+  if (req.method === 'OPTIONS') {
+    sendJson(res, 204, {})
+    return
+  }
+
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'Method not allowed.' })
+    return
+  }
+
+  let tempImagePath = ''
+
+  try {
+    const { imageBase64 } = await readRequestJson(req)
+    if (!imageBase64) {
+      sendJson(res, 400, { error: 'Missing imageBase64.' })
+      return
+    }
+
+    const tmpDirectory = path.join(tmpdir(), 'hypertrophy-tracker-ocr')
+    await mkdir(tmpDirectory, { recursive: true })
+    tempImagePath = path.join(tmpDirectory, `${randomUUID()}.png`)
+    await writeFile(tempImagePath, Buffer.from(imageBase64, 'base64'))
+
+    const scriptPath = path.resolve('scripts/ocr-workout-image.swift')
+    const { stdout } = await execFileAsync('/usr/bin/swift', [scriptPath, tempImagePath], {
+      env: getSwiftEnv(),
+      timeout: 60_000,
+      maxBuffer: 1024 * 1024,
+    })
+
+    const parsedTemplate = parseWorkoutTextToParsedTemplate(stdout)
+    if (parsedTemplate.exercises.length === 0) {
+      sendJson(res, 422, {
+        error: 'Could not detect a workout plan from this image. Try a clearer image or enter the template manually.',
+      })
+      return
+    }
+
+    sendJson(res, 200, parsedTemplate)
+  } catch (error) {
+    const errorText = [error.stderr, error.message].filter(Boolean).join('\n')
+    const isOcrError = /OCR failed|CVPixelBuffer|Command failed|swift|timeout/i.test(errorText)
+
+    sendJson(res, 500, {
+      error: isOcrError
+        ? 'Could not read text from this image. Try a clearer image or enter the template manually.'
+        : error.message || 'Image parser service is not configured.',
+    })
+  } finally {
+    if (tempImagePath) {
+      await rm(tempImagePath, { force: true }).catch(() => {})
+    }
+  }
+}
+
 const workoutImageParserPlugin = () => ({
   name: 'local-workout-image-parser',
   configureServer(server) {
-    server.middlewares.use('/api/parse-workout-image', async (req, res) => {
-      if (req.method === 'OPTIONS') {
-        sendJson(res, 204, {})
-        return
-      }
-
-      if (req.method !== 'POST') {
-        sendJson(res, 405, { error: 'Method not allowed.' })
-        return
-      }
-
-      let tempImagePath = ''
-
-      try {
-        const { imageBase64 } = await readRequestJson(req)
-        if (!imageBase64) {
-          sendJson(res, 400, { error: 'Missing imageBase64.' })
-          return
-        }
-
-        const tmpDirectory = path.join(tmpdir(), 'hypertrophy-tracker-ocr')
-        await mkdir(tmpDirectory, { recursive: true })
-        tempImagePath = path.join(tmpDirectory, `${randomUUID()}.png`)
-        await writeFile(tempImagePath, Buffer.from(imageBase64, 'base64'))
-
-        const scriptPath = path.resolve('scripts/ocr-workout-image.swift')
-        const { stdout } = await execFileAsync('/usr/bin/swift', [scriptPath, tempImagePath], {
-          env: getSwiftEnv(),
-          timeout: 30_000,
-          maxBuffer: 1024 * 1024,
-        })
-
-        const parsedTemplate = parseWorkoutTextToParsedTemplate(stdout)
-        if (parsedTemplate.exercises.length === 0) {
-          sendJson(res, 422, {
-            error: 'Could not detect a workout plan from this image. Try a clearer image or enter the template manually.',
-          })
-          return
-        }
-
-        sendJson(res, 200, parsedTemplate)
-      } catch (error) {
-        const errorText = [error.stderr, error.message].filter(Boolean).join('\n')
-        const isOcrError = /OCR failed|CVPixelBuffer|Command failed|swift/i.test(errorText)
-
-        sendJson(res, 500, {
-          error: isOcrError
-            ? 'Could not read text from this image. Try a clearer image or enter the template manually.'
-            : error.message || 'Image parser service is not configured.',
-        })
-      } finally {
-        if (tempImagePath) {
-          await rm(tempImagePath, { force: true }).catch(() => {})
-        }
-      }
-    })
+    server.middlewares.use('/api/parse-workout-image', handleParseWorkoutImageRequest)
+  },
+  configurePreviewServer(server) {
+    server.middlewares.use('/api/parse-workout-image', handleParseWorkoutImageRequest)
   },
 })
 

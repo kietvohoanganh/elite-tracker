@@ -165,10 +165,11 @@ export const parseWorkoutTextToParsedTemplate = (rawText = '') => {
     const parsed = parseSetsAndReps(line);
     const notes = getParentheticalNotes(line);
     const muscleLabel = notes.find(note => normalizeMuscleGroup(note) !== 'Other') || '';
+    const muscleGroup = normalizeMuscleGroup(muscleLabel || notes.join(' ') || line);
 
     return {
       exerciseName: getExerciseNameFromLine(line),
-      muscleGroup: normalizeMuscleGroup(muscleLabel || notes.join(' ')),
+      muscleGroup,
       sets: parsed.sets,
       reps: parsed.reps,
       weight: '',
