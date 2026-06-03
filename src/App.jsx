@@ -30,9 +30,20 @@ const firebaseConfig = {
   measurementId: "G-JBYZJ82X26"
 };
 
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+const AUTH_LOADING_TIMEOUT_MS = 8000;
+
+let auth = null;
+let db = null;
+
+try {
+  const app = initializeApp(firebaseConfig);
+  auth = getAuth(app);
+  db = getFirestore(app);
+} catch (error) {
+  console.error("Firebase Auth initialization failed:", error);
+  auth = null;
+  db = null;
+}
 
 const THEME = {
   primaryRed: '#DA291C',
@@ -361,11 +372,74 @@ export default function App() {
 
   // --- USE EFFECTS ---
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    if (!import.meta.env.DEV || typeof window === 'undefined') return undefined;
+
+    const handleWindowError = (event) => {
+      console.error("Window runtime error:", event.error || event.message);
+    };
+
+    const handleUnhandledRejection = (event) => {
+      console.error("Unhandled promise rejection:", event.reason);
+    };
+
+    window.addEventListener('error', handleWindowError);
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+
+    return () => {
+      window.removeEventListener('error', handleWindowError);
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+    };
+  }, []);
+
+  useEffect(() => {
+    let isActive = true;
+    let unsubscribe = null;
+
+    const finishAuthLoading = (currentUser = null) => {
+      if (!isActive) return;
       setUser(currentUser);
       setAuthLoading(false);
-    });
-    return () => unsubscribe();
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      console.error("Firebase Auth initialization timed out after 8 seconds.");
+      finishAuthLoading(null);
+    }, AUTH_LOADING_TIMEOUT_MS);
+
+    if (!auth) {
+      window.clearTimeout(timeoutId);
+      console.error("Firebase Auth is unavailable. Showing login screen.");
+      finishAuthLoading(null);
+      return () => {
+        isActive = false;
+        window.clearTimeout(timeoutId);
+      };
+    }
+
+    try {
+      unsubscribe = onAuthStateChanged(
+        auth,
+        (currentUser) => {
+          window.clearTimeout(timeoutId);
+          finishAuthLoading(currentUser);
+        },
+        (error) => {
+          window.clearTimeout(timeoutId);
+          console.error("Firebase Auth state listener failed:", error);
+          finishAuthLoading(null);
+        }
+      );
+    } catch (error) {
+      window.clearTimeout(timeoutId);
+      console.error("Firebase Auth initialization failed:", error);
+      finishAuthLoading(null);
+    }
+
+    return () => {
+      isActive = false;
+      window.clearTimeout(timeoutId);
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -1291,6 +1365,13 @@ export default function App() {
   };
 
   const handleAuth = async (type) => {
+    if (!auth) {
+      const error = new Error("Firebase Auth is unavailable. Please restart the app and try again.");
+      console.error("Firebase Auth action failed:", error);
+      alert(error.message);
+      return;
+    }
+
     const sanitizedEmail = email.trim();
     if (!sanitizedEmail) return alert("Please enter an email address.");
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -1300,7 +1381,26 @@ export default function App() {
     try {
       if (type === 'signup') await createUserWithEmailAndPassword(auth, sanitizedEmail, password);
       else await signInWithEmailAndPassword(auth, sanitizedEmail, password);
-    } catch (e) { alert("Firebase Protocol: " + e.message); }
+    } catch (e) {
+      console.error("Firebase Auth action failed:", e);
+      alert("Firebase Protocol: " + e.message);
+    }
+  };
+
+  const handleSignOut = async () => {
+    if (!auth) {
+      const error = new Error("Firebase Auth is unavailable. Please restart the app and try again.");
+      console.error("Firebase sign-out failed:", error);
+      alert(error.message);
+      return;
+    }
+
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Firebase sign-out failed:", error);
+      alert("Sign out failed: " + error.message);
+    }
   };
 
   // --- RENDER FLOW ---
@@ -1720,7 +1820,7 @@ export default function App() {
               <p style={{color: THEME.textSecondary, margin: '0 0 10px 0'}}>Logged in as:</p>
               <p style={{fontSize: '18px', fontWeight: 'bold', margin: 0}}>{user.email}</p>
             </div>
-            <button className="mu-button mu-danger-btn" onClick={() => signOut(auth)} style={{...styles.authButton, backgroundColor: THEME.dangerRed, borderColor: THEME.dangerRed}}>Sign Out</button>
+            <button className="mu-button mu-danger-btn" onClick={handleSignOut} style={{...styles.authButton, backgroundColor: THEME.dangerRed, borderColor: THEME.dangerRed}}>Sign Out</button>
           </div>
         )}
       </div> 
