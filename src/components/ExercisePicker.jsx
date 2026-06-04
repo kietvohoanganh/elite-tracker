@@ -1,10 +1,10 @@
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 
 const getExerciseKey = (exercise) => (
   exercise.exerciseId || `${exercise.muscleGroup}-${exercise.exerciseName}`
 );
 
-export default function ExercisePicker({
+function ExercisePicker({
   exerciseLibrary,
   searchQuery,
   onSearchChange,
@@ -21,6 +21,8 @@ export default function ExercisePicker({
   styles,
   theme,
 }) {
+  const favoriteExerciseSet = useMemo(() => new Set(favoriteExercises), [favoriteExercises]);
+
   const exerciseGroups = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
 
@@ -28,8 +30,8 @@ export default function ExercisePicker({
       .map((exercise, index) => ({ ...exercise, libraryIndex: index }))
       .filter(exercise => !query || exercise.exerciseName.toLowerCase().includes(query))
       .sort((a, b) => {
-        const aFav = favoriteExercises.includes(a.exerciseName);
-        const bFav = favoriteExercises.includes(b.exerciseName);
+        const aFav = favoriteExerciseSet.has(a.exerciseName);
+        const bFav = favoriteExerciseSet.has(b.exerciseName);
         if (aFav && !bFav) return -1;
         if (!aFav && bFav) return 1;
         return a.libraryIndex - b.libraryIndex;
@@ -39,7 +41,7 @@ export default function ExercisePicker({
         groups[exercise.muscleGroup].push(exercise);
         return groups;
       }, {});
-  }, [exerciseLibrary, favoriteExercises, searchQuery]);
+  }, [exerciseLibrary, favoriteExerciseSet, searchQuery]);
 
   const groupEntries = Object.entries(exerciseGroups);
   const hasResults = groupEntries.length > 0;
@@ -95,7 +97,7 @@ export default function ExercisePicker({
             <div key={muscleGroup} style={compact ? styles.templateLibraryGroup : styles.exercisePickerGroup}>
               <h3 style={compact ? styles.templateLibraryGroupTitle : styles.exercisePickerGroupTitle}>{muscleGroup}</h3>
               {exercises.map(exercise => {
-                const isFav = favoriteExercises.includes(exercise.exerciseName);
+                const isFav = favoriteExerciseSet.has(exercise.exerciseName);
                 const selected = Boolean(isExerciseSelected?.(exercise));
                 const isHighlighted = highlightedExerciseId && highlightedExerciseId === exercise.exerciseId;
                 const selectLabel = getSelectLabel ? getSelectLabel(exercise, selected) : '+';
@@ -173,3 +175,5 @@ export default function ExercisePicker({
     </div>
   );
 }
+
+export default memo(ExercisePicker);

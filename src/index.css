@@ -34,6 +34,10 @@
   --mu-fast: 180ms var(--mu-ease);
   --mu-med: 260ms var(--mu-ease);
   --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+  --safe-top: env(safe-area-inset-top);
+  --safe-right: env(safe-area-inset-right);
+  --safe-bottom: env(safe-area-inset-bottom);
+  --safe-left: env(safe-area-inset-left);
 
   font: 16px/1.5 var(--sans);
   letter-spacing: 0;
@@ -50,10 +54,20 @@
   box-sizing: border-box;
 }
 
+*,
+*::before,
+*::after {
+  min-width: 0;
+}
+
 html,
 body {
-  min-height: 100%;
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100svh;
+  min-height: 100dvh;
   margin: 0;
+  overflow: hidden;
   background:
     radial-gradient(circle at 12% -10%, rgba(218, 41, 28, 0.28), transparent 32vw),
     radial-gradient(circle at 96% 3%, rgba(242, 201, 76, 0.12), transparent 28vw),
@@ -61,6 +75,7 @@ body {
 }
 
 body {
+  width: 100%;
   overflow: hidden;
 }
 
@@ -77,9 +92,13 @@ body::before {
 }
 
 #root {
-  width: min(100%, 1180px);
+  width: 100%;
+  max-width: 480px;
+  min-height: 100vh;
   min-height: 100svh;
+  min-height: 100dvh;
   margin: 0 auto;
+  overflow: hidden;
   border-inline: 1px solid var(--mu-border);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 160px),
@@ -165,6 +184,12 @@ select {
 
 .app-shell {
   position: relative;
+  width: 100%;
+  max-width: 480px;
+  min-height: 100vh;
+  min-height: 100svh;
+  min-height: 100dvh;
+  margin: 0 auto;
   overflow: hidden;
   isolation: isolate;
 }
@@ -217,6 +242,12 @@ select {
 }
 
 .content-scroll {
+  height: 100vh;
+  height: 100svh;
+  height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   scroll-behavior: smooth;
   animation: fadeSlideUp 360ms var(--mu-ease) both;
 }
@@ -228,6 +259,26 @@ select {
 
 .tab-scene {
   animation: fadeSlideUp 320ms var(--mu-ease) both;
+  contain: layout paint;
+}
+
+.tab-skeleton {
+  pointer-events: none;
+}
+
+.tab-skeleton__line {
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.075);
+  position: relative;
+}
+
+.tab-skeleton__line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.11), transparent);
+  transform: translateX(-100%);
+  animation: skeletonSweep 900ms var(--mu-ease) infinite;
 }
 
 .workout-hero {
@@ -294,11 +345,18 @@ select {
 .history-card,
 .exercise-card,
 .panel-card {
+  contain: layout paint;
   transition:
     transform var(--mu-med),
     border-color var(--mu-med),
     box-shadow var(--mu-med),
     background-color var(--mu-med);
+}
+
+.template-card,
+.history-card {
+  content-visibility: auto;
+  contain-intrinsic-size: 180px;
 }
 
 .template-card:hover,
@@ -321,9 +379,9 @@ select {
 .bottom-nav {
   position: fixed;
   left: 50%;
-  bottom: max(14px, env(safe-area-inset-bottom));
+  bottom: calc(10px + var(--safe-bottom));
   z-index: 120;
-  width: min(calc(100% - 28px), 620px);
+  width: min(calc(100vw - 24px), 430px);
   min-height: 76px;
   display: grid;
   grid-template-columns: 1fr 1fr 1.18fr 1fr 1fr;
@@ -340,6 +398,9 @@ select {
   backdrop-filter: blur(22px);
   -webkit-backdrop-filter: blur(22px);
   transform: translateX(-50%);
+  transition:
+    transform var(--mu-med),
+    opacity var(--mu-med);
 }
 
 .bottom-nav__item {
@@ -516,11 +577,69 @@ label.mu-button:active,
   }
 }
 
+@keyframes skeletonSweep {
+  to {
+    transform: translateX(100%);
+  }
+}
+
 @media (min-width: 760px) {
   .workout-hero::after {
     right: 46px;
     width: 128px;
     height: 188px;
+  }
+}
+
+@media (min-width: 431px) {
+  #root,
+  .app-shell {
+    max-width: 480px;
+  }
+}
+
+@media (min-width: 376px) and (max-width: 430px) {
+  #root,
+  .app-shell {
+    max-width: 430px;
+  }
+}
+
+@media (max-width: 375px) {
+  :root {
+    --mu-radius: 14px;
+    --mu-radius-lg: 20px;
+    --mu-radius-xl: 26px;
+    --mu-space: 14px;
+  }
+
+  #root,
+  .app-shell {
+    max-width: 375px;
+  }
+
+  .auth-screen {
+    padding-inline: 18px !important;
+  }
+
+  .bottom-nav {
+    width: calc(100vw - 18px);
+    min-height: 70px;
+    padding: 6px;
+  }
+
+  .bottom-nav__item {
+    min-height: 56px;
+    padding-inline: 3px;
+  }
+
+  .bottom-nav__label {
+    font-size: 10px;
+  }
+
+  .bottom-nav__item--primary .bottom-nav__icon {
+    width: 50px;
+    height: 50px;
   }
 }
 

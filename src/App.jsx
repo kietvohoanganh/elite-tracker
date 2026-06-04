@@ -1,7 +1,16 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from "firebase/app";
-import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "firebase/auth";
-import { getFirestore, collection, query, orderBy, onSnapshot, addDoc, deleteDoc, doc, setDoc, getDoc } from "firebase/firestore";
+import {
+  browserLocalPersistence,
+  getAuth,
+  indexedDBLocalPersistence,
+  initializeAuth,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+} from "firebase/auth";
+import { getFirestore, collection, query, orderBy, limit, onSnapshot, getDocs, addDoc, deleteDoc, doc, setDoc, getDoc } from "firebase/firestore";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import ExercisePicker from './components/ExercisePicker';
 import FitnessIcon from './components/FitnessIcon';
@@ -30,14 +39,26 @@ const firebaseConfig = {
   measurementId: "G-JBYZJ82X26"
 };
 
-const AUTH_LOADING_TIMEOUT_MS = 8000;
+const AUTH_LOADING_TIMEOUT_MS = 4000;
 
 let auth = null;
 let db = null;
 
 try {
   const app = initializeApp(firebaseConfig);
-  auth = getAuth(app);
+
+  try {
+    auth = initializeAuth(app, {
+      persistence: [indexedDBLocalPersistence, browserLocalPersistence],
+      popupRedirectResolver: undefined,
+    });
+    console.info("Firebase Auth initialized with persistent storage.");
+  } catch (authError) {
+    if (authError?.code !== 'auth/already-initialized') throw authError;
+    console.info("Firebase Auth was already initialized; using existing Auth instance.");
+    auth = getAuth(app);
+  }
+
   db = getFirestore(app);
 } catch (error) {
   console.error("Firebase Auth initialization failed:", error);
@@ -86,6 +107,13 @@ const MAIN_NAV_ITEMS = [
   { id: 'food', label: 'Nutrition', icon: 'nutrition' },
   { id: 'you', label: 'Profile', icon: 'profile' },
 ];
+const HEAVY_TABS = new Set(['history', 'tdee', 'food']);
+const CHART_HEIGHT = 260;
+
+const getInitialActiveTab = () => {
+  if (typeof window === 'undefined') return 'workout';
+  return localStorage.getItem('eliteTrackerTab') || 'workout';
+};
 
 const createDefaultExerciseId = (muscleGroup, exerciseName) => {
   const slug = `${muscleGroup}-${exerciseName}`
@@ -142,6 +170,106 @@ const dedupeById = (items = []) => (
   Array.from(new Map(items.map(item => [item.id, item])).values())
 );
 
+const sortByUpdatedAtDesc = (items = []) => (
+  [...items].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))
+);
+
+const getElapsedSeconds = (startedAt) => (
+  startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0
+);
+
+const formatTime = (totalSeconds) => {
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
+
+const TimerDisplay = memo(function TimerDisplay({ startedAt, style }) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(() => getElapsedSeconds(startedAt));
+
+  useEffect(() => {
+    setElapsedSeconds(getElapsedSeconds(startedAt));
+    if (!startedAt) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      setElapsedSeconds(getElapsedSeconds(startedAt));
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [startedAt]);
+
+  return <h1 style={style}>{formatTime(elapsedSeconds)}</h1>;
+});
+
+const WorkoutExerciseBlock = memo(function WorkoutExerciseBlock({
+  exercise,
+  sets,
+  previous,
+  onAddSet,
+  onToggleSetCompletion,
+  onUpdateSet,
+}) {
+  return (
+    <div className="exercise-card" style={styles.exerciseBlock}>
+      <div style={styles.exerciseHeader}><h3 style={styles.exerciseName}>{exercise}</h3></div>
+      <div style={styles.tableHeader}>
+        <span style={styles.setCol}>Set</span>
+        <span style={styles.prevCol}>Prev</span>
+        <span style={styles.inputColTitle}>kg</span>
+        <span style={styles.inputColTitle}>Reps</span>
+        <span style={styles.checkCol}>✓</span>
+      </div>
+      {sets.map((set, idx) => (
+        <div className={set.completed ? 'completed-set' : ''} key={idx} style={{
+          ...styles.setRow,
+          backgroundColor: set.completed ? THEME.successSoft : 'transparent',
+          borderColor: set.completed ? 'rgba(52, 199, 89, 0.38)' : 'transparent'
+        }}>
+          <span style={styles.setCol}>{idx + 1}</span>
+          <span style={styles.prevCol}>{previous || "—"}</span>
+          <div style={styles.inputCol}>
+            <input
+              type="number"
+              step="0.1"
+              placeholder="0"
+              value={set.weight}
+              onChange={(e) => onUpdateSet(exercise, idx, 'weight', e.target.value)}
+              style={styles.inputField}
+            />
+          </div>
+          <div style={styles.inputCol}>
+            <input
+              type="number"
+              placeholder="0"
+              value={set.reps}
+              onChange={(e) => onUpdateSet(exercise, idx, 'reps', e.target.value)}
+              style={styles.inputField}
+            />
+          </div>
+          <div style={styles.checkCol}>
+            <button
+              type="button"
+              className="mu-icon-button"
+              onClick={() => onToggleSetCompletion(exercise, idx)}
+              style={{
+                ...styles.checkButton,
+                backgroundColor: set.completed ? THEME.successGreen : THEME.bgDark,
+                color: set.completed ? THEME.bgBlack : THEME.textSecondary,
+                borderColor: set.completed ? THEME.successGreen : THEME.border
+              }}
+            >
+              ✓
+            </button>
+          </div>
+        </div>
+      ))}
+      <div style={{textAlign: 'center', marginTop: '10px'}}>
+        <span onClick={() => onAddSet(exercise)} style={styles.addSetText}>+ Add Set</span>
+      </div>
+    </div>
+  );
+});
+
 // 4. SEASONING DATABASE 
 const SEASONING_DATABASE = [
   { key: 'soySauce', label: 'Soy Sauce', kcal: 5 },
@@ -160,6 +288,7 @@ export default function App() {
   // --- STATE MANAGEMENT ---
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [authStartupSlow, setAuthStartupSlow] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [foodSearch, setFoodSearch] = useState('');
@@ -167,12 +296,45 @@ export default function App() {
   const [isSearchingFood, setIsSearchingFood] = useState(false);
   const [exerciseSearchQuery, setExerciseSearchQuery] = useState('');
   // --- TAB PERSISTENCE STATE ---
-  const [activeTab, setActiveTab] = useState(() => {
-    return localStorage.getItem('eliteTrackerTab') || 'workout';
+  const [activeTab, setActiveTab] = useState(getInitialActiveTab);
+  const [deferredTab, setDeferredTab] = useState(() => {
+    const initialTab = getInitialActiveTab();
+    return HEAVY_TABS.has(initialTab) ? null : initialTab;
   });
+  const [isTabTransitioning, setIsTabTransitioning] = useState(() => HEAVY_TABS.has(getInitialActiveTab()));
+  const tabTransitionFrameRef = useRef(null);
 
   useEffect(() => {
     localStorage.setItem('eliteTrackerTab', activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (tabTransitionFrameRef.current) {
+      window.cancelAnimationFrame(tabTransitionFrameRef.current);
+      tabTransitionFrameRef.current = null;
+    }
+
+    if (!HEAVY_TABS.has(activeTab)) {
+      setDeferredTab(activeTab);
+      setIsTabTransitioning(false);
+      return undefined;
+    }
+
+    setIsTabTransitioning(true);
+    setDeferredTab(null);
+
+    tabTransitionFrameRef.current = window.requestAnimationFrame(() => {
+      setDeferredTab(activeTab);
+      setIsTabTransitioning(false);
+      tabTransitionFrameRef.current = null;
+    });
+
+    return () => {
+      if (tabTransitionFrameRef.current) {
+        window.cancelAnimationFrame(tabTransitionFrameRef.current);
+        tabTransitionFrameRef.current = null;
+      }
+    };
   }, [activeTab]);
   // --- FAVORITE EXERCISES STATE ---
   // --- FAVORITE EXERCISES STATE (FIREBASE SYNCED) ---
@@ -181,45 +343,6 @@ export default function App() {
   const [workoutTemplates, setWorkoutTemplates] = useState([]);
   const [templatesError, setTemplatesError] = useState('');
 
-  // Lắng nghe dữ liệu favorites từ Firebase Firestore
-  useEffect(() => {
-    if (user) {
-      const prefsRef = doc(db, "users", user.uid, "preferences", "exercises");
-      const unsubscribe = onSnapshot(prefsRef, (docSnap) => {
-        if (docSnap.exists()) {
-          setFavoriteExercises(docSnap.data().favorites || []);
-        } else {
-          setFavoriteExercises([]); // Nếu chưa có dữ liệu thì set mảng rỗng
-        }
-      });
-      return () => unsubscribe();
-    }
-  }, [user]);
-
-  useEffect(() => {
-    if (user) {
-      const customExercisesRef = collection(db, "users", user.uid, "custom_exercises");
-      const unsubscribe = onSnapshot(customExercisesRef, (snapshot) => {
-        const exercisesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setCustomExercises(dedupeById(exercisesData));
-      });
-      return () => unsubscribe();
-    }
-  }, [user]);
-
-  useEffect(() => {
-    if (user) {
-      const templatesQuery = query(collection(db, "users", user.uid, "workout_templates"), orderBy("updatedAt", "desc"));
-      const unsubscribe = onSnapshot(templatesQuery, (snapshot) => {
-        const templatesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setWorkoutTemplates(dedupeById(templatesData));
-        setTemplatesError('');
-      }, () => {
-        setTemplatesError('Templates could not be loaded right now.');
-      });
-      return () => unsubscribe();
-    }
-  }, [user]);
   const [workoutHistory, setWorkoutHistory] = useState([]);
   const [selectedExerciseHistoryName, setSelectedExerciseHistoryName] = useState('');
   const [selectedDate, setSelectedDate] = useState(null); 
@@ -252,7 +375,7 @@ export default function App() {
   const isSavingImportedTemplateRef = useRef(false);
   const [currentTemplateId, setCurrentTemplateId] = useState(null);
   const [currentTemplateName, setCurrentTemplateName] = useState('');
-  const [seconds, setSeconds] = useState(0);
+  const workoutStartedAtRef = useRef(null);
   
   // COACHING MODULE STATES
   const [profileAge, setProfileAge] = useState(20);
@@ -267,6 +390,9 @@ export default function App() {
   const [dailyWeight, setDailyWeight] = useState('');
   const [dailyLogs, setDailyLogs] = useState([]);
   const [dynamicTDEE, setDynamicTDEE] = useState(null);
+  const [chartReady, setChartReady] = useState(false);
+  const [chartSize, setChartSize] = useState({ width: 0, height: CHART_HEIGHT });
+  const chartFrameRef = useRef(null);
 
   const calculateDynamicTDEE = (logs, windowSize = 14) => {
     const windowLogs = logs.slice(0, windowSize);
@@ -297,6 +423,109 @@ export default function App() {
   const [isSavingCustomExercise, setIsSavingCustomExercise] = useState(false);
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
   const [isSavingImportedTemplate, setIsSavingImportedTemplate] = useState(false);
+  const [isBottomNavVisible, setIsBottomNavVisible] = useState(true);
+  const contentScrollRef = useRef(null);
+  const previousScrollTopRef = useRef(0);
+
+  const isAnyModalOpen = Boolean(
+    showExerciseModal ||
+    showCreateExerciseModal ||
+    showTemplateModal ||
+    showImportTemplateModal ||
+    selectedExerciseHistoryName ||
+    selectedFood
+  );
+
+  const shouldLoadExerciseLibrary = Boolean(
+    user &&
+    activeTab === 'workout' &&
+    (showExerciseModal || showCreateExerciseModal || showTemplateModal || showImportTemplateModal)
+  );
+  const visibleTab = deferredTab;
+  const isTdeeTabVisible = visibleTab === 'tdee';
+
+  useEffect(() => {
+    if (!user || activeTab !== 'workout') return undefined;
+
+    let isCancelled = false;
+
+    const loadWorkoutTemplates = async () => {
+      try {
+        const templatesQuery = query(collection(db, "users", user.uid, "workout_templates"), orderBy("updatedAt", "desc"));
+        const snapshot = await getDocs(templatesQuery);
+        if (isCancelled) return;
+
+        const templatesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setWorkoutTemplates(sortByUpdatedAtDesc(dedupeById(templatesData)));
+        setTemplatesError('');
+      } catch (error) {
+        if (!isCancelled) {
+          console.error("Workout templates could not be loaded:", error);
+          setTemplatesError('Templates could not be loaded right now.');
+        }
+      }
+    };
+
+    loadWorkoutTemplates();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeTab, user]);
+
+  useEffect(() => {
+    if (!shouldLoadExerciseLibrary) return undefined;
+
+    let isCancelled = false;
+
+    const loadFavoriteExercises = async () => {
+      try {
+        const prefsRef = doc(db, "users", user.uid, "preferences", "exercises");
+        const docSnap = await getDoc(prefsRef);
+        if (isCancelled) return;
+
+        setFavoriteExercises(docSnap.exists() ? docSnap.data().favorites || [] : []);
+      } catch (error) {
+        if (!isCancelled) {
+          console.error("Favorite exercises could not be loaded:", error);
+          setFavoriteExercises([]);
+        }
+      }
+    };
+
+    loadFavoriteExercises();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [shouldLoadExerciseLibrary, user]);
+
+  useEffect(() => {
+    if (!shouldLoadExerciseLibrary) return undefined;
+
+    let isCancelled = false;
+
+    const loadCustomExercises = async () => {
+      try {
+        const customExercisesRef = collection(db, "users", user.uid, "custom_exercises");
+        const snapshot = await getDocs(customExercisesRef);
+        if (isCancelled) return;
+
+        const exercisesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setCustomExercises(dedupeById(exercisesData));
+      } catch (error) {
+        if (!isCancelled) {
+          console.error("Custom exercises could not be loaded:", error);
+        }
+      }
+    };
+
+    loadCustomExercises();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [shouldLoadExerciseLibrary, user]);
 
   const prevData = useMemo(() => {
     if (!isWorkoutActive || workoutHistory.length === 0) return {};
@@ -397,13 +626,15 @@ export default function App() {
 
     const finishAuthLoading = (currentUser = null) => {
       if (!isActive) return;
+      setAuthStartupSlow(false);
       setUser(currentUser);
       setAuthLoading(false);
     };
 
     const timeoutId = window.setTimeout(() => {
-      console.error("Firebase Auth initialization timed out after 8 seconds.");
-      finishAuthLoading(null);
+      if (!isActive) return;
+      console.info(`Firebase Auth is still loading after ${AUTH_LOADING_TIMEOUT_MS / 1000} seconds.`);
+      setAuthStartupSlow(true);
     }, AUTH_LOADING_TIMEOUT_MS);
 
     if (!auth) {
@@ -421,17 +652,18 @@ export default function App() {
         auth,
         (currentUser) => {
           window.clearTimeout(timeoutId);
+          console.info(`Firebase Auth state resolved; ${currentUser ? 'user session found' : 'no user session'}.`);
           finishAuthLoading(currentUser);
         },
         (error) => {
           window.clearTimeout(timeoutId);
-          console.error("Firebase Auth state listener failed:", error);
+          console.error("Firebase Auth state error:", error);
           finishAuthLoading(null);
         }
       );
     } catch (error) {
       window.clearTimeout(timeoutId);
-      console.error("Firebase Auth initialization failed:", error);
+      console.error("Firebase Auth state listener initialization failed:", error);
       finishAuthLoading(null);
     }
 
@@ -443,9 +675,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (user) {
-      const logsQuery = query(collection(db, "users", user.uid, "daily_logs"), orderBy("timestamp", "desc"));
-      const unsubscribe = onSnapshot(logsQuery, (snapshot) => {
+    const shouldLoadDailyLogs = user && ['tdee', 'food', 'you'].includes(activeTab);
+    if (!shouldLoadDailyLogs) return undefined;
+
+    const logsQuery = query(collection(db, "users", user.uid, "daily_logs"), orderBy("timestamp", "desc"));
+    const unsubscribe = onSnapshot(
+      logsQuery,
+      (snapshot) => {
         const logsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         setDailyLogs(logsData);
         if (logsData.length >= 7) {
@@ -453,29 +689,63 @@ export default function App() {
         } else {
           setDynamicTDEE(null);
         }
-      });
-      return () => unsubscribe();
-    }
-  }, [user]);
+      },
+      (error) => {
+        console.error("Daily logs listener failed:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [activeTab, user]);
 
   useEffect(() => {
-    if (user) {
-      const historyQuery = query(collection(db, "users", user.uid, "history"), orderBy("timestamp", "desc"));
-      const unsubscribe = onSnapshot(historyQuery, (snapshot) => {
+    const shouldLoadHistory = user && (activeTab === 'history' || isWorkoutActive);
+    if (!shouldLoadHistory) return undefined;
+
+    const historyQuery = query(collection(db, "users", user.uid, "history"), orderBy("timestamp", "desc"), limit(50));
+    const unsubscribe = onSnapshot(
+      historyQuery,
+      (snapshot) => {
         const historyData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         setWorkoutHistory(historyData);
-      });
-      return () => unsubscribe();
+      },
+      (error) => {
+        console.error("Workout history listener failed:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [activeTab, isWorkoutActive, user]);
+
+  const handleContentScroll = useCallback((event) => {
+    const nextScrollTop = event.currentTarget.scrollTop;
+    const previousScrollTop = previousScrollTopRef.current;
+    const delta = nextScrollTop - previousScrollTop;
+
+    if (nextScrollTop <= 20) {
+      setIsBottomNavVisible(true);
+    } else if (delta > 10 && nextScrollTop > 80) {
+      setIsBottomNavVisible(false);
+    } else if (delta < -8) {
+      setIsBottomNavVisible(true);
     }
-  }, [user]);
+
+    previousScrollTopRef.current = nextScrollTop;
+  }, []);
+
+  const handleTabSelect = useCallback((nextTab) => {
+    if (nextTab === activeTab) return;
+    setActiveTab(nextTab);
+  }, [activeTab]);
 
   useEffect(() => {
-    let interval = null;
-    if (isWorkoutActive) {
-      interval = setInterval(() => setSeconds(s => s + 1), 1000);
-    }
-    return () => clearInterval(interval);
-  }, [isWorkoutActive]);
+    setIsBottomNavVisible(true);
+    previousScrollTopRef.current = contentScrollRef.current?.scrollTop || 0;
+  }, [activeTab]);
+
+  const getWorkoutDurationSeconds = useCallback(() => (
+    getElapsedSeconds(workoutStartedAtRef.current)
+  ), []);
 
   // --- HELPER FUNCTIONS ---
   const getTodayDocId = () => {
@@ -493,12 +763,14 @@ export default function App() {
       : [...favoriteExercises, exerciseName];
 
     // Cập nhật lên Firebase Firestore
+    setFavoriteExercises(newFavorites);
     try {
       const prefsRef = doc(db, "users", user.uid, "preferences", "exercises");
       await setDoc(prefsRef, {
         favorites: newFavorites
       }, { merge: true }); // Dùng merge để không ghi đè mất các preferences khác nếu có sau này
     } catch (error) {
+      setFavoriteExercises(favoriteExercises);
       alert("Error syncing favorites: " + error.message);
     }
   };
@@ -527,16 +799,24 @@ export default function App() {
     setTargetMacros({ kcal: targetTDEE, protein, fat, carbs });
   };
 
-  const generateTrendData = () => {
-    if (dailyLogs.length === 0) return [];
+  const weightTrendData = useMemo(() => {
+    if (!isTdeeTabVisible || dailyLogs.length < 2) return [];
 
-    const chronologicalLogs = [...dailyLogs].reverse();
+    const chronologicalLogs = [...dailyLogs]
+      .reverse()
+      .map(log => ({
+        log,
+        weight: parseFloat(log.weight),
+      }))
+      .filter(({ weight }) => Number.isFinite(weight));
+
+    if (chronologicalLogs.length < 2) return [];
+
     const alpha = 2 / (7 + 1); 
-    
     let currentEMA = chronologicalLogs[0].weight; 
 
-    return chronologicalLogs.map((log) => {
-      const actualWeight = parseFloat(log.weight || currentEMA);
+    return chronologicalLogs.map(({ log, weight }) => {
+      const actualWeight = weight;
       currentEMA = (alpha * actualWeight) + ((1 - alpha) * currentEMA);
       const shortDate = new Date(log.date).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' });
       
@@ -546,7 +826,57 @@ export default function App() {
         Trend: parseFloat(currentEMA.toFixed(2))
       };
     });
-  };
+  }, [dailyLogs, isTdeeTabVisible]);
+
+  useEffect(() => {
+    setChartReady(false);
+    setChartSize({ width: 0, height: CHART_HEIGHT });
+    if (!isTdeeTabVisible || dailyLogs.length < 2 || weightTrendData.length < 2) return undefined;
+
+    let resizeObserver = null;
+    const syncChartSize = () => {
+      const chartFrame = chartFrameRef.current;
+      if (!chartFrame) {
+        setChartReady(false);
+        return;
+      }
+
+      const rect = chartFrame.getBoundingClientRect();
+      const width = Math.floor(rect.width);
+      const height = Math.floor(rect.height || CHART_HEIGHT);
+      const hasValidSize = width > 0 && height > 0;
+
+      setChartSize(prev => (
+        prev.width === width && prev.height === height
+          ? prev
+          : { width: hasValidSize ? width : 0, height: hasValidSize ? height : CHART_HEIGHT }
+      ));
+      setChartReady(hasValidSize);
+    };
+
+    const frameId = window.requestAnimationFrame(() => {
+      syncChartSize();
+
+      if (typeof ResizeObserver !== 'undefined' && chartFrameRef.current) {
+        resizeObserver = new ResizeObserver(syncChartSize);
+        resizeObserver.observe(chartFrameRef.current);
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      if (resizeObserver) resizeObserver.disconnect();
+    };
+  }, [dailyLogs.length, isTdeeTabVisible, weightTrendData.length]);
+
+  const shouldMountWeightChart = Boolean(
+    isTdeeTabVisible &&
+    chartReady &&
+    dailyLogs.length >= 2 &&
+    weightTrendData.length >= 2 &&
+    chartSize.width > 0 &&
+    chartSize.height > 0
+  );
 
   const deleteDailyLog = async (logId) => {
     try {
@@ -588,6 +918,26 @@ export default function App() {
     }
     return week;
   };
+
+  const currentWeekDays = useMemo(() => getCurrentWeek(), [weekOffset]);
+
+  const workoutDayMatchStrings = useMemo(() => {
+    const matches = new Set();
+    currentWeekDays.forEach(dayInfo => {
+      if (workoutHistory.some(entry => (entry.date || '').includes(dayInfo.matchString))) {
+        matches.add(dayInfo.matchString);
+      }
+    });
+    return matches;
+  }, [currentWeekDays, workoutHistory]);
+
+  const filteredWorkoutHistory = useMemo(() => (
+    selectedDate
+      ? workoutHistory.filter(entry => (entry.date || '').includes(selectedDate))
+      : workoutHistory
+  ), [selectedDate, workoutHistory]);
+
+  const visibleFoodResults = useMemo(() => foodResults, [foodResults]);
 
   // Function to search generic foods via USDA FoodData Central API (Upgraded Nutrient Parsing)
   const searchFood = async () => {
@@ -745,8 +1095,8 @@ export default function App() {
 
   // --- WORKOUT LOGIC ---
   const startWorkout = () => {
+    workoutStartedAtRef.current = Date.now();
     setIsWorkoutActive(true);
-    setSeconds(0);
     setActiveWorkout({});
     setCurrentTemplateId(null);
     setCurrentTemplateName('');
@@ -754,9 +1104,9 @@ export default function App() {
 
   const discardWorkout = () => {
     if(window.confirm("Are you sure you want to discard this session? All progress will be lost.")) {
+      workoutStartedAtRef.current = null;
       setIsWorkoutActive(false);
       setActiveWorkout({});
-      setSeconds(0);
       setCurrentTemplateId(null);
       setCurrentTemplateName('');
     }
@@ -838,6 +1188,10 @@ export default function App() {
     try {
       const docRef = await addDoc(collection(db, "users", user.uid, "custom_exercises"), exerciseDoc);
       setLastCreatedExerciseId(docRef.id);
+      setCustomExercises(prev => dedupeById([
+        ...prev,
+        { id: docRef.id, ...exerciseDoc },
+      ]));
 
       if (createExerciseContext === 'template') {
         setTemplateExerciseSearch(exerciseName);
@@ -1104,6 +1458,10 @@ export default function App() {
           const docRef = await addDoc(collection(db, "users", user.uid, "custom_exercises"), exerciseDoc);
           savedCustomExerciseIds[identityKey(exercise)] = docRef.id;
           lastCustomExerciseId = docRef.id;
+          setCustomExercises(prev => dedupeById([
+            ...prev,
+            { id: docRef.id, ...exerciseDoc },
+          ]));
         }
 
         if (lastCustomExerciseId) {
@@ -1137,7 +1495,11 @@ export default function App() {
 
       if (importRawText.trim()) templateDoc.rawImportText = importRawText.trim();
 
-      await addDoc(collection(db, "users", user.uid, "workout_templates"), templateDoc);
+      const docRef = await addDoc(collection(db, "users", user.uid, "workout_templates"), templateDoc);
+      setWorkoutTemplates(prev => sortByUpdatedAtDesc(dedupeById([
+        { id: docRef.id, ...templateDoc },
+        ...prev,
+      ])));
       closeImportTemplateModal();
     } catch (error) {
       setImportTemplateError("Error saving imported template: " + error.message);
@@ -1261,8 +1623,15 @@ export default function App() {
     try {
       if (editingTemplateId) {
         await setDoc(doc(db, "users", user.uid, "workout_templates", editingTemplateId), templateDoc);
+        setWorkoutTemplates(prev => sortByUpdatedAtDesc(prev.map(template => (
+          template.id === editingTemplateId ? { id: editingTemplateId, ...templateDoc } : template
+        ))));
       } else {
-        await addDoc(collection(db, "users", user.uid, "workout_templates"), templateDoc);
+        const docRef = await addDoc(collection(db, "users", user.uid, "workout_templates"), templateDoc);
+        setWorkoutTemplates(prev => sortByUpdatedAtDesc(dedupeById([
+          { id: docRef.id, ...templateDoc },
+          ...prev,
+        ])));
       }
 
       closeTemplateModal();
@@ -1293,41 +1662,53 @@ export default function App() {
       return;
     }
 
+    workoutStartedAtRef.current = Date.now();
     setActiveWorkout(templateWorkout);
     setCurrentTemplateId(template.id);
     setCurrentTemplateName(template.name || '');
-    setSeconds(0);
     setIsWorkoutActive(true);
   };
 
-  const updateSet = (exercise, setIndex, field, value) => {
-    const updated = { ...activeWorkout };
-    updated[exercise][setIndex][field] = value;
-    setActiveWorkout(updated);
-  };
+  const updateSet = useCallback((exercise, setIndex, field, value) => {
+    setActiveWorkout(prev => ({
+      ...prev,
+      [exercise]: (prev[exercise] || []).map((set, index) => (
+        index === setIndex ? { ...set, [field]: value } : set
+      )),
+    }));
+  }, []);
 
-  const addSet = (exercise) => {
-    const updated = { ...activeWorkout };
-    const currentSets = updated[exercise];
+  const addSet = useCallback((exercise) => {
+    setActiveWorkout(prev => {
+      const currentSets = prev[exercise] || [];
     
-    let inheritedWeight = '';
-    let inheritedReps = '';
+      let inheritedWeight = '';
+      let inheritedReps = '';
     
-    if (currentSets.length > 0) {
-      const lastSet = currentSets[currentSets.length - 1];
-      inheritedWeight = lastSet.weight;
-      inheritedReps = lastSet.reps;
-    }
+      if (currentSets.length > 0) {
+        const lastSet = currentSets[currentSets.length - 1];
+        inheritedWeight = lastSet.weight;
+        inheritedReps = lastSet.reps;
+      }
 
-    currentSets.push({ reps: inheritedReps, weight: inheritedWeight, completed: false });
-    setActiveWorkout(updated);
-  };
+      return {
+        ...prev,
+        [exercise]: [
+          ...currentSets,
+          { reps: inheritedReps, weight: inheritedWeight, completed: false },
+        ],
+      };
+    });
+  }, []);
 
-  const toggleSetCompletion = (exercise, setIndex) => {
-    const updated = { ...activeWorkout };
-    updated[exercise][setIndex].completed = !updated[exercise][setIndex].completed;
-    setActiveWorkout(updated);
-  };
+  const toggleSetCompletion = useCallback((exercise, setIndex) => {
+    setActiveWorkout(prev => ({
+      ...prev,
+      [exercise]: (prev[exercise] || []).map((set, index) => (
+        index === setIndex ? { ...set, completed: !set.completed } : set
+      )),
+    }));
+  }, []);
 
   const finishWorkout = async () => {
     if (Object.keys(activeWorkout).length === 0) return alert("Log data to proceed.");
@@ -1336,7 +1717,7 @@ export default function App() {
         timestamp: Date.now(),
         date: new Date().toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
         matchDate: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), 
-        duration: formatTime(seconds),
+        duration: formatTime(getWorkoutDurationSeconds()),
         data: activeWorkout,
       };
 
@@ -1346,6 +1727,7 @@ export default function App() {
       }
 
       await addDoc(collection(db, "users", user.uid, "history"), historyDoc);
+      workoutStartedAtRef.current = null;
       setIsWorkoutActive(false);
       setActiveWorkout({});
       setCurrentTemplateId(null);
@@ -1404,11 +1786,19 @@ export default function App() {
   };
 
   // --- RENDER FLOW ---
-  if (authLoading) return <div className="app-shell app-shell-loading" style={styles.appContainer}><p style={{padding: '50px', color: THEME.textSecondary}}>Loading...</p></div>;
+  if (authLoading) {
+    return (
+      <div className="app-shell app-shell-loading" style={styles.appContainer}>
+        <div style={styles.loadingPanel}>
+          <p style={styles.loadingText}>{authStartupSlow ? 'Still loading your session...' : 'Loading...'}</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return (
-      <div className="app-shell auth-screen" style={{...styles.appContainer, justifyContent: 'center', alignItems: 'center', padding: '40px'}}>
+      <div className="app-shell auth-screen" style={{...styles.appContainer, justifyContent: 'center', alignItems: 'center', padding: 'calc(40px + env(safe-area-inset-top)) 40px calc(40px + env(safe-area-inset-bottom))'}}>
         <h1 style={styles.authTitle}>Elite Tracker</h1>
         <input type="email" placeholder="Email" style={styles.authInput} onChange={(e) => setEmail(e.target.value)} />
         <input type="password" placeholder="Password" style={styles.authInput} onChange={(e) => setPassword(e.target.value)} />
@@ -1419,6 +1809,7 @@ export default function App() {
   }
 
   const profileInitial = (user.email || 'U').trim().charAt(0).toUpperCase();
+  const shouldShowBottomNav = isBottomNavVisible && !isAnyModalOpen;
 
   return (
     <div className="app-shell" style={styles.appContainer}>
@@ -1436,10 +1827,22 @@ export default function App() {
         </header>
       )}
 
-      <div className="content-scroll" style={styles.contentScroll}>
+      <div
+        ref={contentScrollRef}
+        className="content-scroll"
+        style={styles.contentScroll}
+        onScroll={handleContentScroll}
+      >
+        {isTabTransitioning && (
+          <div className="tab-scene tab-skeleton" style={styles.tabSkeleton} aria-hidden="true">
+            <div className="tab-skeleton__line" style={styles.tabSkeletonTitle}></div>
+            <div className="tab-skeleton__line" style={styles.tabSkeletonBlock}></div>
+            <div className="tab-skeleton__line" style={styles.tabSkeletonBlock}></div>
+          </div>
+        )}
         
         {/* WORKOUT TAB */}
-        {activeTab === 'workout' && (
+        {visibleTab === 'workout' && (
           <div className="tab-scene">
             {!isWorkoutActive ? (
               <div style={styles.workoutHome}>
@@ -1498,48 +1901,39 @@ export default function App() {
             ) : (
               <div>
                 <div style={styles.topBar}>
-                  <span style={{color: THEME.textSecondary, fontSize: '20px', cursor: 'pointer'}} onClick={discardWorkout}>▼</span>
-                  <span style={{color: THEME.primaryRed, fontWeight: '800', cursor: 'pointer', fontSize: '18px'}} onClick={finishWorkout}>Finish</span>
+                  <button
+                    type="button"
+                    className="mu-icon-button"
+                    aria-label="Discard workout"
+                    onClick={discardWorkout}
+                    style={styles.topBarDiscardButton}
+                  >
+                    ▼
+                  </button>
+                  <button
+                    type="button"
+                    className="mu-button mu-main-btn"
+                    onClick={finishWorkout}
+                    style={styles.topBarFinishButton}
+                  >
+                    Finish
+                  </button>
                 </div>
-                <h1 style={styles.timerText}>{formatTime(seconds)}</h1>
+                <TimerDisplay startedAt={workoutStartedAtRef.current} style={styles.timerText} />
 
                 {Object.keys(activeWorkout).length === 0 ? (
                   <p style={{textAlign: 'center', color: THEME.textSecondary, marginTop: '40px'}}>Tap below to add your first exercise.</p>
                 ) : (
                   Object.entries(activeWorkout).map(([exercise, sets]) => (
-                    <div className="exercise-card" key={exercise} style={styles.exerciseBlock}>
-                      <div style={styles.exerciseHeader}><h3 style={styles.exerciseName}>{exercise}</h3></div>
-                      <div style={styles.tableHeader}>
-                        <span style={styles.setCol}>Set</span>
-                        <span style={styles.prevCol}>Prev</span>
-                        <span style={styles.inputColTitle}>kg</span>
-                        <span style={styles.inputColTitle}>Reps</span>
-                        <span style={styles.checkCol}>✓</span>
-                      </div>
-                      {sets.map((set, idx) => (
-                        <div className={set.completed ? 'completed-set' : ''} key={idx} style={{
-                          ...styles.setRow,
-                          backgroundColor: set.completed ? THEME.successSoft : 'transparent',
-                          borderColor: set.completed ? 'rgba(52, 199, 89, 0.38)' : 'transparent'
-                        }}>
-                          <span style={styles.setCol}>{idx + 1}</span>
-                          <span style={styles.prevCol}>{prevData[exercise] || "—"}</span>
-                          <div style={styles.inputCol}>
-                          <input 
-                            type="number" 
-                            step="0.1" 
-                            placeholder="0" 
-                            value={set.weight} 
-                            onChange={(e) => updateSet(exercise, idx, 'weight', e.target.value)} 
-                            style={styles.inputField} 
-                            />
-                          </div>
-                          <div style={styles.inputCol}><input type="number" placeholder="0" value={set.reps} onChange={(e) => updateSet(exercise, idx, 'reps', e.target.value)} style={styles.inputField} /></div>
-                          <div style={styles.checkCol}><button className="mu-icon-button" onClick={() => toggleSetCompletion(exercise, idx)} style={{...styles.checkButton, backgroundColor: set.completed ? THEME.successGreen : THEME.bgDark, color: set.completed ? THEME.bgBlack : THEME.textSecondary, borderColor: set.completed ? THEME.successGreen : THEME.border}}>✓</button></div>
-                        </div>
-                      ))}
-                      <div style={{textAlign: 'center', marginTop: '10px'}}><span onClick={() => addSet(exercise)} style={styles.addSetText}>+ Add Set</span></div>
-                    </div>
+                    <WorkoutExerciseBlock
+                      key={exercise}
+                      exercise={exercise}
+                      sets={sets}
+                      previous={prevData[exercise]}
+                      onAddSet={addSet}
+                      onToggleSetCompletion={toggleSetCompletion}
+                      onUpdateSet={updateSet}
+                    />
                   ))
                 )}
                 
@@ -1553,7 +1947,7 @@ export default function App() {
         )}
 
         {/* HISTORY TAB */}
-        {activeTab === 'history' && (
+        {visibleTab === 'history' && (
           <div className="tab-scene" style={{padding: '20px'}}>
             <h1 style={styles.pageTitle}>Your Progress</h1>
             
@@ -1566,8 +1960,8 @@ export default function App() {
             </div>
             
             <div style={styles.calendarContainer}>
-              {getCurrentWeek().map(dayInfo => {
-                const isWorkoutDay = workoutHistory.some(entry => entry.date.includes(dayInfo.matchString));
+              {currentWeekDays.map(dayInfo => {
+                const isWorkoutDay = workoutDayMatchStrings.has(dayInfo.matchString);
                 const isSelected = selectedDate === dayInfo.matchString;
                 return (
                   <div key={dayInfo.date} onClick={() => setSelectedDate(isSelected ? null : dayInfo.matchString)} style={{
@@ -1590,12 +1984,12 @@ export default function App() {
               </p>
             )}
 
-            {workoutHistory.filter(entry => !selectedDate || entry.date.includes(selectedDate)).length === 0 ? (
+            {filteredWorkoutHistory.length === 0 ? (
               <p style={{color: THEME.textSecondary, textAlign: 'center', marginTop: '40px'}}>
                 {selectedDate ? `No workouts recorded on ${selectedDate}` : "No history available."}
               </p>
             ) : (
-              workoutHistory.filter(entry => !selectedDate || entry.date.includes(selectedDate)).map(entry => (
+              filteredWorkoutHistory.map(entry => (
                 <div className="history-card" key={entry.id} style={styles.historyCard}>
                   <div style={styles.historyHeader}>
                     <div>
@@ -1627,8 +2021,8 @@ export default function App() {
         )}
 
         {/* METABOLISM & TREND TAB */}
-        {activeTab === 'tdee' && (
-          <div className="tab-scene" style={{padding: '20px'}}>
+        {visibleTab === 'tdee' && (
+          <div className="tab-scene" style={{padding: '20px', minWidth: 0}}>
             <h2 style={styles.pageTitle}>Metabolism Engine</h2>
             
             <div className="panel-card" style={styles.dashboardCard}>
@@ -1639,21 +2033,30 @@ export default function App() {
               {!dynamicTDEE && <p style={{fontSize: '12px', color: THEME.textSecondary, marginTop: '10px'}}>A minimum of 7 days logged is required for accurate algorithm calibration.</p>}
             </div>
 
-            {dailyLogs.length >= 2 && (
+            {dailyLogs.length >= 2 && weightTrendData.length >= 2 && (
               <div className="panel-card" style={styles.sectionCard}>
                 <h3 style={{margin: '0 0 15px 0', fontSize: '18px', color: THEME.textPrimary}}>Weight Trend Analysis</h3>
-                <div style={{height: '250px', width: '100%'}}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={generateTrendData()} margin={{ top: 5, right: 5, bottom: 5, left: -20 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke={THEME.border} vertical={false} />
-                      <XAxis dataKey="date" stroke={THEME.textSecondary} fontSize={12} tickLine={false} />
-                      <YAxis stroke={THEME.textSecondary} fontSize={12} tickLine={false} domain={['dataMin - 1', 'dataMax + 1']} />
-                      <Tooltip contentStyle={{backgroundColor: THEME.bgDark, border: `1px solid ${THEME.border}`, borderRadius: '8px', color: THEME.textPrimary}} itemStyle={{color: THEME.textPrimary}} />
-                      <Legend wrapperStyle={{fontSize: '12px', paddingTop: '10px', color: THEME.textSecondary}} />
-                      <Line type="monotone" dataKey="Actual" stroke={THEME.accentGold} strokeWidth={2} strokeDasharray="5 5" dot={{r: 3, fill: THEME.accentGold}} name="Scale Weight" />
-                      <Line type="monotone" dataKey="Trend" stroke={THEME.primaryRed} strokeWidth={3} dot={false} activeDot={{r: 6, fill: THEME.primaryRed}} name="True Trend (EMA)" />
-                    </LineChart>
-                  </ResponsiveContainer>
+                <div ref={chartFrameRef} style={styles.chartFrame}>
+                  {shouldMountWeightChart && (
+                    <ResponsiveContainer
+                      width="100%"
+                      height="100%"
+                      minWidth={1}
+                      minHeight={CHART_HEIGHT}
+                      debounce={100}
+                      initialDimension={{ width: chartSize.width, height: CHART_HEIGHT }}
+                    >
+                      <LineChart data={weightTrendData} margin={{ top: 5, right: 5, bottom: 5, left: -20 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={THEME.border} vertical={false} />
+                        <XAxis dataKey="date" stroke={THEME.textSecondary} fontSize={12} tickLine={false} />
+                        <YAxis stroke={THEME.textSecondary} fontSize={12} tickLine={false} domain={['dataMin - 1', 'dataMax + 1']} />
+                        <Tooltip contentStyle={{backgroundColor: THEME.bgDark, border: `1px solid ${THEME.border}`, borderRadius: '8px', color: THEME.textPrimary}} itemStyle={{color: THEME.textPrimary}} />
+                        <Legend wrapperStyle={{fontSize: '12px', paddingTop: '10px', color: THEME.textSecondary}} />
+                        <Line type="monotone" dataKey="Actual" stroke={THEME.accentGold} strokeWidth={2} strokeDasharray="5 5" dot={{r: 3, fill: THEME.accentGold}} name="Scale Weight" />
+                        <Line type="monotone" dataKey="Trend" stroke={THEME.primaryRed} strokeWidth={3} dot={false} activeDot={{r: 6, fill: THEME.primaryRed}} name="True Trend (EMA)" />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
                 </div>
                 <p style={{fontSize: '11px', color: THEME.textSecondary, textAlign: 'center', marginTop: '10px'}}>The red line represents your true weight trend, filtering out water retention and noise.</p>
               </div>
@@ -1711,7 +2114,7 @@ export default function App() {
         )}
 
         {/* NUTRITION SEARCH TAB */}
-        {activeTab === 'food' && (
+        {visibleTab === 'food' && (
           <div className="tab-scene" style={{padding: '20px'}}>
             <h2 style={styles.pageTitle}>Nutrition Search</h2>
             
@@ -1731,7 +2134,7 @@ export default function App() {
 
             {foodResults.length > 0 ? (
               <div className="panel-card" style={styles.resultsPanel}>
-                {foodResults.map((food) => (
+                {visibleFoodResults.map((food) => (
                   <div key={food.id} style={styles.foodResultRow}>
                     <div style={{textAlign: 'left', flex: 1}}>
                       <p style={{margin: '0 0 5px 0', fontSize: '15px', fontWeight: 'bold'}}>{food.name} <span style={{fontSize: '12px', color: THEME.textSecondary, fontWeight: 'normal'}}>{food.brand}</span></p>
@@ -1753,7 +2156,7 @@ export default function App() {
         )}
 
         {/* PROFILE / COACHING TAB */}
-        {activeTab === 'you' && (
+        {visibleTab === 'you' && (
           <div className="tab-scene" style={{padding: '20px', textAlign: 'center'}}>
             <h2 style={styles.pageTitle}>AI Coaching Setup</h2>
             <div className="panel-card" style={{...styles.sectionCard, textAlign: 'left'}}>
@@ -1826,7 +2229,17 @@ export default function App() {
       </div> 
 
       {!isWorkoutActive && (
-        <nav className="bottom-nav" aria-label="Primary navigation">
+        <nav
+          className="bottom-nav"
+          aria-label="Primary navigation"
+          style={{
+            transform: shouldShowBottomNav
+              ? 'translateX(-50%) translateY(0)'
+              : 'translateX(-50%) translateY(calc(100% + 24px))',
+            opacity: shouldShowBottomNav ? 1 : 0,
+            pointerEvents: shouldShowBottomNav ? 'auto' : 'none',
+          }}
+        >
           {MAIN_NAV_ITEMS.map(item => {
             const isActive = activeTab === item.id;
 
@@ -1839,7 +2252,7 @@ export default function App() {
                   item.isPrimary ? 'bottom-nav__item--primary' : '',
                   isActive ? 'bottom-nav__item--active' : '',
                 ].filter(Boolean).join(' ')}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => handleTabSelect(item.id)}
                 aria-current={isActive ? 'page' : undefined}
               >
                 <span className="bottom-nav__icon">
@@ -1880,7 +2293,7 @@ export default function App() {
 
       {/* CREATE EXERCISE MODAL */}
       {showCreateExerciseModal && (
-        <div className="modal-surface" style={{...styles.modalOverlay, zIndex: 150}}>
+        <div className="modal-surface" style={{...styles.modalOverlay, zIndex: 340}}>
           <div style={styles.modalHeader}>
             <span style={{width: '24px'}}></span>
             <h2 style={{margin: 0, fontSize: '18px'}}>Create Exercise</h2>
@@ -1950,7 +2363,7 @@ export default function App() {
 
       {/* CREATE / EDIT TEMPLATE MODAL */}
 	      {showTemplateModal && (
-	        <div className="modal-surface" style={{...styles.modalOverlay, zIndex: 140}}>
+	        <div className="modal-surface" style={{...styles.modalOverlay, zIndex: 340}}>
           <div style={styles.modalHeader}>
             <span className="mu-icon-button" onClick={closeTemplateModal} style={styles.modalClose}>✕</span>
             <h2 style={{margin: 0, fontSize: '18px'}}>{editingTemplateId ? 'Edit Template' : 'Create Template'}</h2>
@@ -2087,7 +2500,7 @@ export default function App() {
 
 	      {/* IMPORT TEMPLATE FROM IMAGE MODAL */}
 	      {showImportTemplateModal && (
-	        <div className="modal-surface" style={{...styles.modalOverlay, zIndex: 140}}>
+	        <div className="modal-surface" style={{...styles.modalOverlay, zIndex: 340}}>
 	          <div style={styles.modalHeader}>
 	            <span className="mu-icon-button" onClick={closeImportTemplateModal} style={styles.modalClose}>✕</span>
 	            <h2 style={{margin: 0, fontSize: '18px'}}>Import Template From Image</h2>
@@ -2385,7 +2798,7 @@ export default function App() {
             <span style={{width: '24px'}}></span>
           </div>
 
-          <div style={{padding: '20px', overflowY: 'auto'}}>
+          <div style={styles.foodModalBody}>
             <h3 style={{fontSize: '20px', color: THEME.accentGold, marginBottom: '5px'}}>{selectedFood.name}</h3>
             <p style={{color: THEME.textSecondary, fontSize: '14px', marginBottom: '20px'}}>Base: {selectedFood.kcal} kcal / 100g</p>
 
@@ -2428,7 +2841,7 @@ export default function App() {
               ))}
             </div>
 
-            <button className="mu-button mu-main-btn" onClick={confirmAndLogFood} style={{...styles.mainBtn, marginTop: '10px'}}>
+            <button className="mu-button mu-main-btn" onClick={confirmAndLogFood} style={{...styles.mainBtn, ...styles.foodModalConfirmButton}}>
               Confirm & Log
             </button>
           </div>
@@ -2443,8 +2856,12 @@ const styles = {
   appContainer: {
     display: 'flex',
     flexDirection: 'column',
+    width: '100%',
+    maxWidth: '480px',
     height: '100dvh',
-    minHeight: '100svh',
+    minHeight: '100dvh',
+    overflow: 'hidden',
+    margin: '0 auto',
     background:
       'radial-gradient(circle at 18% -8%, rgba(218, 41, 28, 0.22), transparent 34%), radial-gradient(circle at 92% 4%, rgba(242, 201, 76, 0.10), transparent 30%), linear-gradient(180deg, #08080A 0%, #050506 50%, #0A0A0D 100%)',
     color: THEME.textPrimary,
@@ -2452,9 +2869,40 @@ const styles = {
   },
   contentScroll: {
     flex: 1,
+    height: '100dvh',
     overflowY: 'auto',
-    paddingBottom: '132px',
+    overflowX: 'hidden',
+    WebkitOverflowScrolling: 'touch',
+    paddingBottom: 'calc(168px + env(safe-area-inset-bottom))',
+    scrollPaddingBottom: 'calc(168px + env(safe-area-inset-bottom))',
     minHeight: 0,
+    minWidth: 0,
+  },
+  loadingPanel: {
+    width: 'min(100% - 40px, 360px)',
+    padding: 'calc(22px + env(safe-area-inset-top)) 20px 24px',
+    textAlign: 'center',
+  },
+  loadingText: {
+    margin: 0,
+    color: THEME.textSecondary,
+    fontSize: '15px',
+    fontWeight: '800',
+  },
+  tabSkeleton: {
+    padding: '20px',
+    display: 'grid',
+    gap: '14px',
+  },
+  tabSkeletonTitle: {
+    width: '48%',
+    height: '24px',
+    borderRadius: '12px',
+  },
+  tabSkeletonBlock: {
+    width: '100%',
+    height: '112px',
+    borderRadius: '20px',
   },
   authTitle: {
     color: THEME.textPrimary,
@@ -2510,14 +2958,49 @@ const styles = {
   topBar: {
     display: 'flex',
     justifyContent: 'space-between',
-    padding: '18px 22px',
+    padding: '0 22px 14px',
+    paddingTop: 'calc(12px + env(safe-area-inset-top))',
     alignItems: 'center',
+    gap: '16px',
     borderBottom: `1px solid rgba(255, 255, 255, 0.10)`,
-    background: 'rgba(5, 5, 6, 0.82)',
+    background: 'rgba(5, 5, 6, 0.94)',
     backdropFilter: 'blur(18px)',
     position: 'sticky',
     top: 0,
-    zIndex: 30,
+    zIndex: 200,
+    boxShadow: '0 18px 34px rgba(0, 0, 0, 0.28)',
+  },
+  topBarDiscardButton: {
+    width: '48px',
+    height: '48px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    color: THEME.textSecondary,
+    backgroundColor: 'rgba(255, 255, 255, 0.055)',
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '50%',
+    fontSize: '19px',
+    lineHeight: 1,
+    cursor: 'pointer',
+  },
+  topBarFinishButton: {
+    minWidth: '108px',
+    minHeight: '48px',
+    padding: '0 22px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    color: THEME.textPrimary,
+    background: 'linear-gradient(135deg, #FF3B30 0%, #DA291C 100%)',
+    border: '1px solid rgba(255, 255, 255, 0.14)',
+    borderRadius: '999px',
+    fontSize: '16px',
+    fontWeight: '900',
+    cursor: 'pointer',
+    boxShadow: '0 16px 32px rgba(218, 41, 28, 0.28)',
   },
   mainBtn: {
     width: '100%',
@@ -2588,14 +3071,14 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: '14px clamp(16px, 3vw, 26px)',
-    margin: '10px clamp(10px, 2vw, 18px) 0',
+    padding: 'calc(12px + env(safe-area-inset-top)) clamp(16px, 3vw, 26px) 14px',
+    margin: '0 clamp(10px, 2vw, 18px) 0',
     background: 'rgba(14, 15, 18, 0.72)',
     border: `1px solid ${THEME.border}`,
     borderRadius: '24px',
     zIndex: 40,
     position: 'sticky',
-    top: '10px',
+    top: 0,
     boxShadow: '0 18px 42px rgba(0, 0, 0, 0.38)',
   },
   brandTitle: {
@@ -2693,6 +3176,15 @@ const styles = {
     border: `1px solid ${THEME.border}`,
     boxShadow: THEME.shadow,
     backdropFilter: 'blur(16px)',
+    minWidth: 0,
+  },
+  chartFrame: {
+    width: '100%',
+    minWidth: 0,
+    height: CHART_HEIGHT,
+    minHeight: CHART_HEIGHT,
+    position: 'relative',
+    overflow: 'hidden',
   },
   inputLabel: { fontSize: '12px', color: THEME.textSecondary, fontWeight: '700' },
   formLabel: { display: 'block', margin: '0 0 8px 0', color: THEME.textPrimary, fontSize: '14px', fontWeight: '800' },
@@ -2865,9 +3357,10 @@ const styles = {
     cursor: 'pointer',
   },
   templateModalBody: {
-    padding: '24px clamp(18px, 4vw, 28px)',
+    padding: '24px clamp(18px, 4vw, 28px) calc(24px + env(safe-area-inset-bottom))',
     overflowY: 'auto',
     flex: 1,
+    minHeight: 0,
   },
   templateLibraryPanel: {
     background: 'rgba(255, 255, 255, 0.055)',
@@ -3001,12 +3494,14 @@ const styles = {
     justifyContent: 'flex-end',
     gap: '10px',
     marginTop: '18px',
+    paddingBottom: 'calc(20px + env(safe-area-inset-bottom))',
   },
 
   importTemplateModalBody: {
-    padding: '24px clamp(18px, 4vw, 28px)',
+    padding: '24px clamp(18px, 4vw, 28px) calc(24px + env(safe-area-inset-bottom))',
     overflowY: 'auto',
     flex: 1,
+    minHeight: 0,
   },
   importUploadPanel: {
     background: 'linear-gradient(160deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.04))',
@@ -3354,7 +3849,7 @@ const styles = {
     right: 0,
     bottom: 0,
     background: 'linear-gradient(180deg, rgba(20, 21, 26, 0.985), rgba(5, 5, 6, 0.985))',
-    zIndex: 100,
+    zIndex: 320,
     display: 'flex',
     flexDirection: 'column',
     backdropFilter: 'blur(18px)',
@@ -3363,12 +3858,24 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: '18px clamp(18px, 4vw, 28px)',
+    padding: 'calc(12px + env(safe-area-inset-top)) clamp(18px, 4vw, 28px) 16px',
     borderBottom: `1px solid ${THEME.border}`,
     background: 'rgba(255, 255, 255, 0.055)',
     backdropFilter: 'blur(18px)',
   },
   modalClose: { fontSize: '24px', cursor: 'pointer', color: THEME.textSecondary },
+  foodModalBody: {
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
+    padding: '20px 20px calc(96px + env(safe-area-inset-bottom))',
+  },
+  foodModalConfirmButton: {
+    position: 'sticky',
+    bottom: 'max(16px, env(safe-area-inset-bottom))',
+    zIndex: 2,
+    marginTop: '10px',
+  },
   exercisePickerShell: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 },
   exerciseSearchPanel: { padding: '20px clamp(18px, 4vw, 28px)', borderBottom: `1px solid ${THEME.border}`, display: 'flex', alignItems: 'center', gap: '10px' },
   exercisePickerList: { overflowY: 'auto', padding: '4px clamp(18px, 4vw, 28px) 54px', flex: 1 },
@@ -3389,10 +3896,10 @@ const styles = {
   exerciseListActions: { display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 },
   exerciseHistoryBtn: { backgroundColor: 'rgba(255, 255, 255, 0.055)', color: THEME.textSecondary, border: `1px solid ${THEME.border}`, borderRadius: '999px', padding: '6px 10px', fontSize: '12px', fontWeight: '800', cursor: 'pointer' },
   addExerciseIconBtn: { width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: THEME.redSoft, color: THEME.primaryRed, border: `1px solid ${THEME.redMedium}`, borderRadius: '50%', fontSize: '22px', fontWeight: '800', cursor: 'pointer' },
-  createExerciseModalBody: { padding: '24px clamp(18px, 4vw, 28px)', overflowY: 'auto', flex: 1 },
+  createExerciseModalBody: { padding: '24px clamp(18px, 4vw, 28px) calc(24px + env(safe-area-inset-bottom))', overflowY: 'auto', flex: 1, minHeight: 0 },
   textAreaField: { width: '100%', minHeight: '110px', padding: '14px', marginBottom: '15px', backgroundColor: 'rgba(255, 255, 255, 0.065)', color: THEME.textPrimary, border: `1px solid ${THEME.border}`, borderRadius: '16px', fontSize: '16px', outline: 'none', resize: 'vertical', fontFamily: 'inherit' },
   formError: { margin: '0 0 15px 0', color: THEME.dangerRed, fontSize: '13px', fontWeight: '800' },
-  createExerciseActions: { display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' },
+  createExerciseActions: { display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px', paddingBottom: 'calc(20px + env(safe-area-inset-bottom))' },
   cancelBtn: { flex: 1, padding: '14px', backgroundColor: 'rgba(255, 255, 255, 0.055)', color: THEME.textSecondary, border: `1px solid ${THEME.border}`, borderRadius: '999px', fontSize: '15px', fontWeight: '800', cursor: 'pointer' },
   saveExerciseBtn: { flex: 1, padding: '14px', background: 'linear-gradient(135deg, #FF3B30, #DA291C)', color: THEME.textPrimary, border: '1px solid rgba(255, 255, 255, 0.14)', borderRadius: '999px', fontSize: '15px', fontWeight: '900', cursor: 'pointer' },
   seasoningGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', backgroundColor: 'rgba(255, 255, 255, 0.055)', padding: '16px', borderRadius: '18px', border: `1px solid ${THEME.border}`, marginBottom: '20px' },
