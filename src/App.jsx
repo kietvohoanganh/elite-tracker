@@ -12,6 +12,7 @@ import {
 } from "firebase/auth";
 import { getFirestore, collection, query, orderBy, limit, onSnapshot, getDocs, addDoc, deleteDoc, doc, setDoc, getDoc } from "firebase/firestore";
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
+import { Capacitor } from '@capacitor/core';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import ExercisePicker from './components/ExercisePicker';
 import FitnessIcon from './components/FitnessIcon';
@@ -103,6 +104,8 @@ const EXERCISE_DATABASE = {
 const MUSCLE_GROUP_OPTIONS = ['Chest', 'Back', 'Shoulders', 'Legs', 'Arms', 'Core', 'Other'];
 const MAX_TEMPLATE_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 const MAX_MEAL_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
+const FIREBASE_AI_SETUP_URL =
+  'https://console.firebase.google.com/project/hypertrophy-tracker-a14a5/ailogic/';
 const MAIN_NAV_ITEMS = [
   { id: 'history', label: 'History', icon: 'history' },
   { id: 'tdee', label: 'TDEE', icon: 'tdee' },
@@ -427,6 +430,7 @@ export default function App() {
   const [aiMealInputMode, setAiMealInputMode] = useState('');
   const [mealPhotoPreview, setMealPhotoPreview] = useState('');
   const [mealPhotoBase64, setMealPhotoBase64] = useState('');
+  const [mealPhotoMimeType, setMealPhotoMimeType] = useState('image/jpeg');
   const [isAnalyzingMealPhoto, setIsAnalyzingMealPhoto] = useState(false);
   const [mealPhotoError, setMealPhotoError] = useState('');
   const [mealDescriptionInput, setMealDescriptionInput] = useState('');
@@ -435,6 +439,7 @@ export default function App() {
   const [aiMealReviewItems, setAiMealReviewItems] = useState([]);
   const [aiMealError, setAiMealError] = useState('');
   const [isSavingAiMeal, setIsSavingAiMeal] = useState(false);
+  const mealPhotoInputRef = useRef(null);
   const [newExerciseName, setNewExerciseName] = useState('');
   const [newExerciseMuscleGroup, setNewExerciseMuscleGroup] = useState('');
   const [newExerciseNotes, setNewExerciseNotes] = useState('');
@@ -1016,9 +1021,13 @@ export default function App() {
   };
 
   const clearAiMeal = () => {
+    if (mealPhotoInputRef.current) {
+      mealPhotoInputRef.current.value = '';
+    }
     setAiMealInputMode('');
     setMealPhotoPreview('');
     setMealPhotoBase64('');
+    setMealPhotoMimeType('image/jpeg');
     setMealPhotoError('');
     setMealDescriptionInput('');
     setAiMealResult(null);
@@ -1035,10 +1044,75 @@ export default function App() {
     setAiMealError('');
   };
 
+  const applySelectedMealPhoto = (base64String, mimeType = 'image/jpeg') => {
+    const paddingLength = (base64String.match(/=*$/)?.[0].length || 0);
+    const estimatedBytes = Math.ceil((base64String.length * 3) / 4) - paddingLength;
+    if (estimatedBytes > MAX_MEAL_IMAGE_SIZE_BYTES) {
+      throw new Error('That image is too large. Choose a photo smaller than 5 MB.');
+    }
+
+    setMealPhotoBase64(base64String);
+    setMealPhotoMimeType(mimeType);
+    setMealPhotoPreview(`data:${mimeType};base64,${base64String}`);
+    setAiMealResult(null);
+    setAiMealReviewItems([]);
+  };
+
+  const handleMealPhotoFile = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setAiMealInputMode('photo');
+    setMealPhotoError('');
+    setAiMealError('');
+
+    if (!file.type.startsWith('image/')) {
+      setMealPhotoError('Choose an image file to scan your meal.');
+      event.target.value = '';
+      return;
+    }
+
+    if (file.size > MAX_MEAL_IMAGE_SIZE_BYTES) {
+      setMealPhotoError('That image is too large. Choose a photo smaller than 5 MB.');
+      event.target.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const dataUrl = String(reader.result || '');
+        const separatorIndex = dataUrl.indexOf(',');
+        if (separatorIndex < 0) {
+          throw new Error('Could not read that image. Please choose another photo.');
+        }
+
+        applySelectedMealPhoto(
+          dataUrl.slice(separatorIndex + 1),
+          file.type || 'image/jpeg',
+        );
+      } catch (error) {
+        setMealPhotoError(error?.message || 'Could not read that image.');
+      }
+    };
+    reader.onerror = () => {
+      setMealPhotoError('Could not read that image. Please choose another photo.');
+    };
+    reader.readAsDataURL(file);
+  };
+
   const selectMealPhoto = async () => {
     setAiMealInputMode('photo');
     setMealPhotoError('');
     setAiMealError('');
+
+    if (Capacitor.getPlatform() === 'web') {
+      if (mealPhotoInputRef.current) {
+        mealPhotoInputRef.current.value = '';
+        mealPhotoInputRef.current.click();
+      }
+      return;
+    }
 
     try {
       const photo = await Camera.getPhoto({
@@ -1056,17 +1130,10 @@ export default function App() {
         throw new Error('No image was selected. Please try again.');
       }
 
-      const paddingLength = (photo.base64String.match(/=*$/)?.[0].length || 0);
-      const estimatedBytes = Math.ceil((photo.base64String.length * 3) / 4) - paddingLength;
-      if (estimatedBytes > MAX_MEAL_IMAGE_SIZE_BYTES) {
-        throw new Error('That image is too large. Choose a photo smaller than 5 MB.');
-      }
-
-      const imageFormat = photo.format || 'jpeg';
-      setMealPhotoBase64(photo.base64String);
-      setMealPhotoPreview(`data:image/${imageFormat};base64,${photo.base64String}`);
-      setAiMealResult(null);
-      setAiMealReviewItems([]);
+      applySelectedMealPhoto(
+        photo.base64String,
+        `image/${photo.format || 'jpeg'}`,
+      );
     } catch (error) {
       const message = error?.message || '';
       const normalizedMessage = message.toLowerCase();
@@ -1092,7 +1159,7 @@ export default function App() {
     setAiMealError('');
 
     try {
-      const analysis = await analyzeMealImage(mealPhotoBase64);
+      const analysis = await analyzeMealImage(mealPhotoBase64, mealPhotoMimeType);
       applyAiMealAnalysis(analysis);
     } catch (error) {
       setAiMealError(error?.message || 'Meal photo analysis failed. Please try again.');
@@ -2370,6 +2437,13 @@ export default function App() {
               </div>
 
               <div style={styles.aiMealModeButtons}>
+                <input
+                  ref={mealPhotoInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleMealPhotoFile}
+                  style={{display: 'none'}}
+                />
                 <button
                   className="mu-button mu-main-btn"
                   type="button"
@@ -2447,7 +2521,21 @@ export default function App() {
               )}
 
               {mealPhotoError && <p role="alert" style={styles.aiMealError}>{mealPhotoError}</p>}
-              {aiMealError && <p role="alert" style={styles.aiMealError}>{aiMealError}</p>}
+              {aiMealError && (
+                <div role="alert" style={styles.aiMealError}>
+                  <p style={{margin: 0}}>{aiMealError}</p>
+                  {aiMealError.includes('Firebase AI Logic') && (
+                    <a
+                      href={FIREBASE_AI_SETUP_URL}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={styles.aiMealSetupLink}
+                    >
+                      Enable Firebase AI Logic
+                    </a>
+                  )}
+                </div>
+              )}
 
               {aiMealResult && (
                 <div style={styles.aiMealReviewPanel}>
@@ -3742,6 +3830,13 @@ const styles = {
     fontSize: '13px',
     fontWeight: '800',
     lineHeight: 1.45,
+  },
+  aiMealSetupLink: {
+    display: 'inline-block',
+    marginTop: '8px',
+    color: THEME.textPrimary,
+    textDecoration: 'underline',
+    textUnderlineOffset: '3px',
   },
   aiMealReviewPanel: {
     marginTop: '18px',

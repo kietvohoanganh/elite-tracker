@@ -1,4 +1,11 @@
-import { estimateMealDescriptionLocally } from './localMealEstimator';
+import { getApp } from 'firebase/app';
+import {
+  getAI,
+  getGenerativeModel,
+  GoogleAIBackend,
+  Schema,
+} from 'firebase/ai';
+import { estimateMealDescriptionLocally } from './localMealEstimator.js';
 
 const IMAGE_ANALYSIS_PROMPT =
   'Analyze the food in this image. Estimate ingredients, portion size, calories, protein, carbs, and fat. Return JSON only. Do not include markdown. If uncertain, lower the confidence and explain in notes.';
@@ -7,7 +14,35 @@ const DESCRIPTION_ANALYSIS_PROMPT =
   'Analyze this meal description. Estimate calories, protein, carbs, and fat for each food item and the total meal. Return JSON only. Do not include markdown. If portion size is missing, make a reasonable estimate and mark confidence lower.';
 
 const DEFAULT_ERROR_MESSAGE = 'AI meal analysis failed. Please try again.';
-const NOT_CONFIGURED_MESSAGE = 'AI meal analysis service is not configured yet.';
+const FIREBASE_AI_SETUP_MESSAGE =
+  'Meal photo analysis needs Firebase AI Logic enabled for this project.';
+
+const mealItemSchema = Schema.object({
+  properties: {
+    name: Schema.string(),
+    estimatedGrams: Schema.number(),
+    kcal: Schema.number(),
+    protein: Schema.number(),
+    carbs: Schema.number(),
+    fat: Schema.number(),
+    confidence: Schema.number(),
+  },
+});
+
+const mealAnalysisSchema = Schema.object({
+  properties: {
+    mealName: Schema.string(),
+    totalKcal: Schema.number(),
+    totalProtein: Schema.number(),
+    totalCarbs: Schema.number(),
+    totalFat: Schema.number(),
+    confidence: Schema.number(),
+    items: Schema.array({ items: mealItemSchema }),
+    notes: Schema.string(),
+  },
+});
+
+let firebaseMealModel = null;
 
 const clampNumber = (value, min = 0, max = Number.POSITIVE_INFINITY) => {
   const parsedValue = Number(value);
@@ -90,67 +125,69 @@ export const normalizeMealAnalysis = (payload) => {
   };
 };
 
-const requestMealAnalysis = async (endpoint, body, fallback) => {
-  let response;
+const getFirebaseMealModel = () => {
+  if (firebaseMealModel) return firebaseMealModel;
 
-  try {
-    response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-  } catch {
-    if (fallback) return fallback();
-    throw new Error(NOT_CONFIGURED_MESSAGE);
-  }
+  const ai = getAI(getApp(), { backend: new GoogleAIBackend() });
+  firebaseMealModel = getGenerativeModel(ai, {
+    model: 'gemini-2.5-flash',
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseSchema: mealAnalysisSchema,
+      temperature: 0.2,
+    },
+  });
 
-  if (!response.ok) {
-    if (response.status === 404 || response.status === 501 || response.status === 503) {
-      if (fallback) return fallback();
-      throw new Error(NOT_CONFIGURED_MESSAGE);
-    }
-
-    let errorMessage = '';
-    try {
-      const errorPayload = await response.json();
-      errorMessage = cleanString(errorPayload?.message || errorPayload?.error);
-    } catch {
-      // The backend may return an empty or non-JSON error response.
-    }
-
-    throw new Error(errorMessage || DEFAULT_ERROR_MESSAGE);
-  }
-
-  let responsePayload;
-  try {
-    responsePayload = await response.json();
-  } catch {
-    if (fallback) return fallback();
-    throw new Error('The AI returned invalid JSON. Please try the analysis again.');
-  }
-
-  return normalizeMealAnalysis(responsePayload);
+  return firebaseMealModel;
 };
 
-export const analyzeMealImage = async (imageBase64) => {
+const getMealAnalysisError = (error) => {
+  const code = String(error?.code || '').toLowerCase();
+  const status = Number(error?.customErrorData?.status);
+  const message = String(error?.message || '').toLowerCase();
+
+  if (code.includes('api-not-enabled') || message.includes('api is not enabled')) {
+    return new Error(FIREBASE_AI_SETUP_MESSAGE);
+  }
+
+  if (status === 429 || code.includes('quota')) {
+    return new Error('Meal analysis is temporarily at its usage limit. Please try again shortly.');
+  }
+
+  if (status === 401 || status === 403) {
+    return new Error('Firebase AI could not authorize this request. Check AI Logic and App Check settings.');
+  }
+
+  if (code.includes('fetch-error') || code.includes('network')) {
+    return new Error('Could not reach the meal analysis service. Check your connection and try again.');
+  }
+
+  return new Error(cleanString(error?.message, DEFAULT_ERROR_MESSAGE));
+};
+
+const generateMealAnalysis = async (content) => {
+  try {
+    const result = await getFirebaseMealModel().generateContent(content);
+    return normalizeMealAnalysis(result.response.text());
+  } catch (error) {
+    throw getMealAnalysisError(error);
+  }
+};
+
+export const analyzeMealImage = async (imageBase64, mimeType = 'image/jpeg') => {
   if (!cleanString(imageBase64)) {
     throw new Error('Choose a meal photo before analyzing.');
   }
 
-  /*
-   * TODO: Implement POST /api/analyze-meal-image in a Firebase Function or
-   * another trusted backend. Keep the AI API key server-side.
-   *
-   * Request:  { imageBase64: "...", userPrompt: "..." }
-   * Response: { mealName, totalKcal, totalProtein, totalCarbs, totalFat,
-   *             confidence, items: [...], notes }
-   */
-  return requestMealAnalysis('/api/analyze-meal-image', {
-    imageBase64,
-    userPrompt: IMAGE_ANALYSIS_PROMPT,
-  });
+  return generateMealAnalysis([
+    IMAGE_ANALYSIS_PROMPT,
+    {
+      inlineData: {
+        data: imageBase64,
+        mimeType: cleanString(mimeType, 'image/jpeg'),
+      },
+    },
+  ]);
 };
 
 export const analyzeMealDescription = async (description) => {
@@ -159,20 +196,11 @@ export const analyzeMealDescription = async (description) => {
     throw new Error('Describe your meal before analyzing.');
   }
 
-  /*
-   * TODO: Implement POST /api/analyze-meal-description in a Firebase Function
-   * or another trusted backend. Never expose the production AI API key here.
-   *
-   * Request:  { description: "...", userPrompt: "..." }
-   * Response: { mealName, totalKcal, totalProtein, totalCarbs, totalFat,
-   *             confidence, items: [...], notes }
-   */
-  return requestMealAnalysis(
-    '/api/analyze-meal-description',
-    {
-      description: cleanDescription,
-      userPrompt: DESCRIPTION_ANALYSIS_PROMPT,
-    },
-    () => normalizeMealAnalysis(estimateMealDescriptionLocally(cleanDescription)),
-  );
+  try {
+    return await generateMealAnalysis(
+      `${DESCRIPTION_ANALYSIS_PROMPT}\n\nMeal description: ${cleanDescription}`,
+    );
+  } catch {
+    return normalizeMealAnalysis(estimateMealDescriptionLocally(cleanDescription));
+  }
 };
