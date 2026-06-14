@@ -11,6 +11,7 @@ import {
   signOut,
 } from "firebase/auth";
 import { getFirestore, collection, query, orderBy, limit, onSnapshot, getDocs, addDoc, deleteDoc, doc, setDoc, getDoc } from "firebase/firestore";
+import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import ExercisePicker from './components/ExercisePicker';
 import FitnessIcon from './components/FitnessIcon';
@@ -26,6 +27,7 @@ import {
   findExerciseLibraryMatch,
   mapParsedExerciseToTemplateExercise,
 } from './utils/exerciseParsing';
+import { analyzeMealDescription, analyzeMealImage } from './services/mealAnalyzer';
 import { parseWorkoutTemplateImage } from './services/templateImageParser';
 
 // 1. YOUR FIREBASE CONFIGURATION
@@ -100,6 +102,7 @@ const EXERCISE_DATABASE = {
 
 const MUSCLE_GROUP_OPTIONS = ['Chest', 'Back', 'Shoulders', 'Legs', 'Arms', 'Core', 'Other'];
 const MAX_TEMPLATE_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
+const MAX_MEAL_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 const MAIN_NAV_ITEMS = [
   { id: 'history', label: 'History', icon: 'history' },
   { id: 'tdee', label: 'TDEE', icon: 'tdee' },
@@ -109,6 +112,13 @@ const MAIN_NAV_ITEMS = [
 ];
 const HEAVY_TABS = new Set(['history', 'tdee', 'food']);
 const CHART_HEIGHT = 260;
+
+const clampNutritionValue = (value) => {
+  const parsedValue = Number(value);
+  return Number.isFinite(parsedValue) ? Math.max(0, parsedValue) : 0;
+};
+
+const roundNutritionValue = (value) => Math.round(clampNutritionValue(value) * 10) / 10;
 
 const getInitialActiveTab = () => {
   if (typeof window === 'undefined') return 'workout';
@@ -414,6 +424,17 @@ export default function App() {
   const [foodWeight, setFoodWeight] = useState(100);
   const [cookingMethod, setCookingMethod] = useState('raw_boiled');
   const [activeSeasonings, setActiveSeasonings] = useState({});
+  const [aiMealInputMode, setAiMealInputMode] = useState('');
+  const [mealPhotoPreview, setMealPhotoPreview] = useState('');
+  const [mealPhotoBase64, setMealPhotoBase64] = useState('');
+  const [isAnalyzingMealPhoto, setIsAnalyzingMealPhoto] = useState(false);
+  const [mealPhotoError, setMealPhotoError] = useState('');
+  const [mealDescriptionInput, setMealDescriptionInput] = useState('');
+  const [isAnalyzingMealDescription, setIsAnalyzingMealDescription] = useState(false);
+  const [aiMealResult, setAiMealResult] = useState(null);
+  const [aiMealReviewItems, setAiMealReviewItems] = useState([]);
+  const [aiMealError, setAiMealError] = useState('');
+  const [isSavingAiMeal, setIsSavingAiMeal] = useState(false);
   const [newExerciseName, setNewExerciseName] = useState('');
   const [newExerciseMuscleGroup, setNewExerciseMuscleGroup] = useState('');
   const [newExerciseNotes, setNewExerciseNotes] = useState('');
@@ -939,6 +960,20 @@ export default function App() {
 
   const visibleFoodResults = useMemo(() => foodResults, [foodResults]);
 
+  const aiMealTotals = useMemo(() => aiMealReviewItems.reduce((totals, item) => ({
+    grams: totals.grams + clampNutritionValue(item.estimatedGrams),
+    kcal: totals.kcal + clampNutritionValue(item.kcal),
+    protein: totals.protein + clampNutritionValue(item.protein),
+    carbs: totals.carbs + clampNutritionValue(item.carbs),
+    fat: totals.fat + clampNutritionValue(item.fat),
+  }), {
+    grams: 0,
+    kcal: 0,
+    protein: 0,
+    carbs: 0,
+    fat: 0,
+  }), [aiMealReviewItems]);
+
   // Function to search generic foods via USDA FoodData Central API (Upgraded Nutrient Parsing)
   const searchFood = async () => {
     if (!foodSearch.trim()) return;
@@ -978,6 +1013,215 @@ export default function App() {
       alert("Error fetching food database: " + error.message);
     }
     setIsSearchingFood(false);
+  };
+
+  const clearAiMeal = () => {
+    setAiMealInputMode('');
+    setMealPhotoPreview('');
+    setMealPhotoBase64('');
+    setMealPhotoError('');
+    setMealDescriptionInput('');
+    setAiMealResult(null);
+    setAiMealReviewItems([]);
+    setAiMealError('');
+  };
+
+  const applyAiMealAnalysis = (analysis) => {
+    setAiMealResult(analysis);
+    setAiMealReviewItems(analysis.items.map((item, index) => ({
+      ...item,
+      reviewId: `${Date.now()}-${index}`,
+    })));
+    setAiMealError('');
+  };
+
+  const selectMealPhoto = async () => {
+    setAiMealInputMode('photo');
+    setMealPhotoError('');
+    setAiMealError('');
+
+    try {
+      const photo = await Camera.getPhoto({
+        quality: 75,
+        allowEditing: false,
+        resultType: CameraResultType.Base64,
+        source: CameraSource.Prompt,
+        promptLabelHeader: 'Add meal photo',
+        promptLabelCancel: 'Cancel',
+        promptLabelPhoto: 'Choose from Library',
+        promptLabelPicture: 'Take Photo',
+      });
+
+      if (!photo.base64String) {
+        throw new Error('No image was selected. Please try again.');
+      }
+
+      const paddingLength = (photo.base64String.match(/=*$/)?.[0].length || 0);
+      const estimatedBytes = Math.ceil((photo.base64String.length * 3) / 4) - paddingLength;
+      if (estimatedBytes > MAX_MEAL_IMAGE_SIZE_BYTES) {
+        throw new Error('That image is too large. Choose a photo smaller than 5 MB.');
+      }
+
+      const imageFormat = photo.format || 'jpeg';
+      setMealPhotoBase64(photo.base64String);
+      setMealPhotoPreview(`data:image/${imageFormat};base64,${photo.base64String}`);
+      setAiMealResult(null);
+      setAiMealReviewItems([]);
+    } catch (error) {
+      const message = error?.message || '';
+      const normalizedMessage = message.toLowerCase();
+
+      if (normalizedMessage.includes('cancel')) return;
+      if (normalizedMessage.includes('permission') || normalizedMessage.includes('denied')) {
+        setMealPhotoError('Camera or photo library permission was denied. Enable access in iPhone Settings and try again.');
+        return;
+      }
+
+      setMealPhotoError(message || 'Could not open the camera or photo library.');
+    }
+  };
+
+  const analyzeSelectedMealPhoto = async () => {
+    if (!mealPhotoBase64) {
+      setMealPhotoError('Choose a meal photo before analyzing.');
+      return;
+    }
+
+    setIsAnalyzingMealPhoto(true);
+    setMealPhotoError('');
+    setAiMealError('');
+
+    try {
+      const analysis = await analyzeMealImage(mealPhotoBase64);
+      applyAiMealAnalysis(analysis);
+    } catch (error) {
+      setAiMealError(error?.message || 'Meal photo analysis failed. Please try again.');
+    } finally {
+      setIsAnalyzingMealPhoto(false);
+    }
+  };
+
+  const analyzeEnteredMealDescription = async () => {
+    if (!mealDescriptionInput.trim()) {
+      setAiMealError('Describe your meal before analyzing.');
+      return;
+    }
+
+    setIsAnalyzingMealDescription(true);
+    setAiMealError('');
+
+    try {
+      const analysis = await analyzeMealDescription(mealDescriptionInput);
+      applyAiMealAnalysis(analysis);
+    } catch (error) {
+      setAiMealError(error?.message || 'Meal description analysis failed. Please try again.');
+    } finally {
+      setIsAnalyzingMealDescription(false);
+    }
+  };
+
+  const updateAiMealReviewItem = (reviewId, field, value) => {
+    setAiMealReviewItems(items => items.map(item => (
+      item.reviewId === reviewId ? { ...item, [field]: value } : item
+    )));
+  };
+
+  const removeAiMealReviewItem = (reviewId) => {
+    setAiMealReviewItems(items => items.filter(item => item.reviewId !== reviewId));
+  };
+
+  const addAiMealReviewItem = () => {
+    setAiMealReviewItems(items => [
+      ...items,
+      {
+        reviewId: `manual-${Date.now()}`,
+        name: 'New item',
+        estimatedGrams: 0,
+        kcal: 0,
+        protein: 0,
+        carbs: 0,
+        fat: 0,
+        confidence: 0.5,
+      },
+    ]);
+  };
+
+  const saveAiMealToDailyLog = async () => {
+    if (!user || !db) {
+      setAiMealError('You must be logged in before saving a meal.');
+      return;
+    }
+
+    if (!aiMealResult || aiMealReviewItems.length === 0) {
+      setAiMealError('Add at least one reviewed food item before saving.');
+      return;
+    }
+
+    const reviewedItems = aiMealReviewItems.map(item => ({
+      name: String(item.name || 'Meal item').trim() || 'Meal item',
+      estimatedGrams: roundNutritionValue(item.estimatedGrams),
+      kcal: roundNutritionValue(item.kcal),
+      protein: roundNutritionValue(item.protein),
+      carbs: roundNutritionValue(item.carbs),
+      fat: roundNutritionValue(item.fat),
+      confidence: Math.min(1, Math.max(0, Number(item.confidence) || 0)),
+    }));
+
+    const totals = reviewedItems.reduce((sum, item) => ({
+      grams: sum.grams + item.estimatedGrams,
+      kcal: sum.kcal + item.kcal,
+      protein: sum.protein + item.protein,
+      carbs: sum.carbs + item.carbs,
+      fat: sum.fat + item.fat,
+    }), {
+      grams: 0,
+      kcal: 0,
+      protein: 0,
+      carbs: 0,
+      fat: 0,
+    });
+
+    const todayId = getTodayDocId();
+    const logRef = doc(db, "users", user.uid, "daily_logs", todayId);
+    setIsSavingAiMeal(true);
+    setAiMealError('');
+
+    try {
+      const docSnap = await getDoc(logRef);
+      const currentData = docSnap.exists() ? docSnap.data() : {};
+      const currentFoods = [...(currentData.foods || [])];
+
+      currentFoods.push({
+        name: String(aiMealResult.mealName || 'AI Meal').trim() || 'AI Meal',
+        weight: roundNutritionValue(totals.grams),
+        kcal: roundNutritionValue(totals.kcal),
+        protein: roundNutritionValue(totals.protein),
+        carbs: roundNutritionValue(totals.carbs),
+        fat: roundNutritionValue(totals.fat),
+        time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+        source: 'ai_meal_scan',
+        confidence: Math.min(1, Math.max(0, Number(aiMealResult.confidence) || 0)),
+        items: reviewedItems,
+      });
+
+      await setDoc(logRef, {
+        timestamp: currentData.timestamp || Date.now(),
+        date: new Date().toLocaleDateString('en-US'),
+        foods: currentFoods,
+        calories: roundNutritionValue(clampNutritionValue(currentData.calories) + totals.kcal),
+        protein: roundNutritionValue(clampNutritionValue(currentData.protein) + totals.protein),
+        carbs: roundNutritionValue(clampNutritionValue(currentData.carbs) + totals.carbs),
+        fat: roundNutritionValue(clampNutritionValue(currentData.fat) + totals.fat),
+        weight: currentData.weight || '',
+      }, { merge: true });
+
+      alert("Meal saved to today's calories!");
+      clearAiMeal();
+    } catch (error) {
+      setAiMealError(`Could not save this meal: ${error?.message || 'Unknown database error.'}`);
+    } finally {
+      setIsSavingAiMeal(false);
+    }
   };
 
   const openFoodModal = (food) => {
@@ -2117,6 +2361,240 @@ export default function App() {
         {visibleTab === 'food' && (
           <div className="tab-scene" style={{padding: '20px'}}>
             <h2 style={styles.pageTitle}>Nutrition Search</h2>
+
+            <div className="panel-card" style={styles.aiMealCard}>
+              <div>
+                <p style={styles.eyebrow}>Nutrition AI</p>
+                <h3 style={styles.aiMealTitle}>AI Meal Scanner</h3>
+                <p style={styles.aiMealSubtitle}>Take a photo or describe your meal. Review before saving.</p>
+              </div>
+
+              <div style={styles.aiMealModeButtons}>
+                <button
+                  className="mu-button mu-main-btn"
+                  type="button"
+                  onClick={selectMealPhoto}
+                  disabled={isAnalyzingMealPhoto || isAnalyzingMealDescription}
+                  style={styles.analyzeButton}
+                >
+                  Scan Meal Photo
+                </button>
+                <button
+                  className="mu-button mu-secondary-btn"
+                  type="button"
+                  onClick={() => {
+                    setAiMealInputMode('description');
+                    setAiMealError('');
+                    setMealPhotoError('');
+                  }}
+                  disabled={isAnalyzingMealPhoto || isAnalyzingMealDescription}
+                  style={styles.aiMealSecondaryButton}
+                >
+                  Describe Meal
+                </button>
+              </div>
+
+              {aiMealInputMode === 'photo' && (
+                <div style={styles.aiMealInputPanel}>
+                  {mealPhotoPreview ? (
+                    <>
+                      <img src={mealPhotoPreview} alt="Selected meal" style={styles.aiMealPreviewImage} />
+                      <div style={styles.aiMealInlineActions}>
+                        <button
+                          className="mu-button mu-main-btn"
+                          type="button"
+                          onClick={analyzeSelectedMealPhoto}
+                          disabled={isAnalyzingMealPhoto}
+                          style={styles.analyzeButton}
+                        >
+                          {isAnalyzingMealPhoto ? 'Analyzing Photo...' : 'Analyze Photo'}
+                        </button>
+                        <button
+                          className="mu-button mu-secondary-btn"
+                          type="button"
+                          onClick={selectMealPhoto}
+                          disabled={isAnalyzingMealPhoto}
+                          style={styles.aiMealSecondaryButton}
+                        >
+                          Change Photo
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <p style={styles.aiMealHint}>Use the button above to take a photo or choose one from your library.</p>
+                  )}
+                </div>
+              )}
+
+              {aiMealInputMode === 'description' && (
+                <div style={styles.aiMealInputPanel}>
+                  <textarea
+                    value={mealDescriptionInput}
+                    onChange={(event) => setMealDescriptionInput(event.target.value)}
+                    placeholder="Example: 1 bowl of rice, 150g chicken breast, 1 fried egg, vegetables"
+                    style={styles.aiMealTextarea}
+                  />
+                  <button
+                    className="mu-button mu-main-btn"
+                    type="button"
+                    onClick={analyzeEnteredMealDescription}
+                    disabled={isAnalyzingMealDescription}
+                    style={styles.analyzeButton}
+                  >
+                    {isAnalyzingMealDescription ? 'Analyzing Description...' : 'Analyze Description'}
+                  </button>
+                </div>
+              )}
+
+              {mealPhotoError && <p role="alert" style={styles.aiMealError}>{mealPhotoError}</p>}
+              {aiMealError && <p role="alert" style={styles.aiMealError}>{aiMealError}</p>}
+
+              {aiMealResult && (
+                <div style={styles.aiMealReviewPanel}>
+                  <div style={styles.aiMealReviewHeader}>
+                    <div>
+                      <p style={styles.eyebrow}>Review Meal</p>
+                      <p style={styles.aiMealReviewHint}>Edit any estimate that does not look right.</p>
+                    </div>
+                    <span
+                      style={{
+                        ...styles.confidenceBadge,
+                        ...(getConfidenceLabel(aiMealResult.confidence) === 'High'
+                          ? styles.confidenceHigh
+                          : getConfidenceLabel(aiMealResult.confidence) === 'Medium'
+                            ? styles.confidenceMedium
+                            : styles.confidenceLow),
+                      }}
+                    >
+                      {getConfidenceLabel(aiMealResult.confidence)} confidence
+                    </span>
+                  </div>
+
+                  <label style={styles.formLabel}>
+                    Meal name
+                    <input
+                      type="text"
+                      value={aiMealResult.mealName}
+                      onChange={(event) => setAiMealResult(result => ({
+                        ...result,
+                        mealName: event.target.value,
+                      }))}
+                      style={{...styles.authInput, marginTop: '8px', marginBottom: 0}}
+                    />
+                  </label>
+
+                  <div style={styles.macroGrid}>
+                    <div style={styles.macroPill}>
+                      <strong style={{color: THEME.accentGold}}>{roundNutritionValue(aiMealTotals.kcal)}</strong>
+                      <span>kcal</span>
+                    </div>
+                    <div style={styles.macroPill}>
+                      <strong style={{color: THEME.dangerRed}}>{roundNutritionValue(aiMealTotals.protein)}g</strong>
+                      <span>Protein</span>
+                    </div>
+                    <div style={styles.macroPill}>
+                      <strong style={{color: THEME.macroCarbs}}>{roundNutritionValue(aiMealTotals.carbs)}g</strong>
+                      <span>Carbs</span>
+                    </div>
+                    <div style={styles.macroPill}>
+                      <strong style={{color: THEME.accentGold}}>{roundNutritionValue(aiMealTotals.fat)}g</strong>
+                      <span>Fat</span>
+                    </div>
+                  </div>
+
+                  <div style={styles.aiMealReviewList}>
+                    {aiMealReviewItems.map((item, itemIndex) => (
+                      <div key={item.reviewId} style={styles.reviewItemCard}>
+                        <div style={styles.reviewItemHeader}>
+                          <strong>Item {itemIndex + 1}</strong>
+                          <div style={styles.reviewItemHeaderActions}>
+                            <span style={styles.confidenceBadge}>
+                              {getConfidenceLabel(item.confidence)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => removeAiMealReviewItem(item.reviewId)}
+                              style={styles.aiMealRemoveButton}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+
+                        <label style={styles.aiMealFieldWide}>
+                          <span style={styles.inputLabel}>Food name</span>
+                          <input
+                            type="text"
+                            value={item.name}
+                            onChange={(event) => updateAiMealReviewItem(item.reviewId, 'name', event.target.value)}
+                            style={{...styles.authInput, padding: '11px', margin: '6px 0 0'}}
+                          />
+                        </label>
+
+                        <div style={styles.aiMealItemGrid}>
+                          {[
+                            ['estimatedGrams', 'Grams'],
+                            ['kcal', 'kcal'],
+                            ['protein', 'Protein'],
+                            ['carbs', 'Carbs'],
+                            ['fat', 'Fat'],
+                          ].map(([field, label]) => (
+                            <label key={field}>
+                              <span style={styles.inputLabel}>{label}</span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.1"
+                                inputMode="decimal"
+                                value={item[field]}
+                                onChange={(event) => updateAiMealReviewItem(item.reviewId, field, event.target.value)}
+                                style={{...styles.authInput, padding: '11px', margin: '6px 0 0'}}
+                              />
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button
+                    className="mu-button mu-secondary-btn"
+                    type="button"
+                    onClick={addAiMealReviewItem}
+                    style={styles.addAiMealItemButton}
+                  >
+                    Add Manual Item
+                  </button>
+
+                  {aiMealResult.notes && (
+                    <p style={styles.aiMealNotes}><strong>Notes:</strong> {aiMealResult.notes}</p>
+                  )}
+
+                  <div style={styles.aiMealSaveActions}>
+                    <button
+                      className="mu-button mu-main-btn"
+                      type="button"
+                      onClick={saveAiMealToDailyLog}
+                      disabled={isSavingAiMeal || aiMealReviewItems.length === 0}
+                      style={styles.saveMealButton}
+                    >
+                      {isSavingAiMeal ? 'Saving Meal...' : 'Save to Today'}
+                    </button>
+                    <button
+                      className="mu-button mu-secondary-btn"
+                      type="button"
+                      onClick={clearAiMeal}
+                      disabled={isSavingAiMeal}
+                      style={styles.aiMealSecondaryButton}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <p style={styles.aiMealDisclaimer}>AI estimates may be inaccurate. Please review before saving.</p>
+            </div>
             
             <div style={{display: 'flex', gap: '10px', marginBottom: '15px'}}>
               <input 
@@ -3177,6 +3655,277 @@ const styles = {
     boxShadow: THEME.shadow,
     backdropFilter: 'blur(16px)',
     minWidth: 0,
+  },
+  aiMealCard: {
+    background:
+      'linear-gradient(155deg, rgba(218, 41, 28, 0.20), rgba(255, 255, 255, 0.075) 42%, rgba(242, 201, 76, 0.08))',
+    padding: '20px',
+    borderRadius: '26px',
+    marginBottom: '24px',
+    border: `1px solid ${THEME.border}`,
+    boxShadow: THEME.shadow,
+    backdropFilter: 'blur(16px)',
+    minWidth: 0,
+    overflow: 'hidden',
+  },
+  aiMealTitle: {
+    margin: 0,
+    color: THEME.textPrimary,
+    fontSize: '22px',
+    fontWeight: '900',
+  },
+  aiMealSubtitle: {
+    margin: '8px 0 0',
+    color: THEME.textSecondary,
+    fontSize: '14px',
+    lineHeight: 1.5,
+  },
+  aiMealModeButtons: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+    gap: '10px',
+    marginTop: '18px',
+  },
+  aiMealInputPanel: {
+    display: 'grid',
+    gap: '12px',
+    marginTop: '16px',
+    padding: '14px',
+    backgroundColor: 'rgba(0, 0, 0, 0.22)',
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '20px',
+    minWidth: 0,
+  },
+  aiMealPreviewImage: {
+    display: 'block',
+    width: '100%',
+    maxHeight: '320px',
+    objectFit: 'cover',
+    borderRadius: '16px',
+    border: `1px solid ${THEME.border}`,
+    backgroundColor: THEME.bgBlack,
+  },
+  aiMealTextarea: {
+    width: '100%',
+    minHeight: '118px',
+    padding: '14px',
+    color: THEME.textPrimary,
+    backgroundColor: 'rgba(255, 255, 255, 0.065)',
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '16px',
+    outline: 'none',
+    resize: 'vertical',
+    boxSizing: 'border-box',
+    fontFamily: 'inherit',
+    fontSize: '15px',
+    lineHeight: 1.5,
+  },
+  aiMealInlineActions: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+    gap: '10px',
+  },
+  aiMealHint: {
+    margin: 0,
+    color: THEME.textSecondary,
+    fontSize: '13px',
+    lineHeight: 1.5,
+    textAlign: 'center',
+  },
+  aiMealError: {
+    margin: '14px 0 0',
+    padding: '12px',
+    color: THEME.dangerRed,
+    backgroundColor: THEME.dangerSoft,
+    border: '1px solid rgba(255, 69, 58, 0.24)',
+    borderRadius: '14px',
+    fontSize: '13px',
+    fontWeight: '800',
+    lineHeight: 1.45,
+  },
+  aiMealReviewPanel: {
+    marginTop: '18px',
+    paddingTop: '18px',
+    borderTop: `1px solid ${THEME.border}`,
+  },
+  aiMealReviewHeader: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: '12px',
+    marginBottom: '16px',
+  },
+  aiMealReviewHint: {
+    margin: 0,
+    color: THEME.textSecondary,
+    fontSize: '13px',
+  },
+  macroGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: '10px',
+    margin: '16px 0',
+  },
+  macroPill: {
+    display: 'flex',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: '8px',
+    minWidth: 0,
+    padding: '11px 12px',
+    backgroundColor: 'rgba(255, 255, 255, 0.055)',
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '14px',
+    color: THEME.textSecondary,
+    fontSize: '12px',
+  },
+  aiMealReviewList: {
+    display: 'grid',
+    gap: '12px',
+  },
+  reviewItemCard: {
+    minWidth: 0,
+    padding: '14px',
+    backgroundColor: 'rgba(255, 255, 255, 0.055)',
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '20px',
+  },
+  reviewItemHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '10px',
+    marginBottom: '12px',
+  },
+  reviewItemHeaderActions: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: '7px',
+    flexWrap: 'wrap',
+  },
+  aiMealFieldWide: {
+    display: 'block',
+    minWidth: 0,
+  },
+  aiMealItemGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: '10px',
+    marginTop: '10px',
+  },
+  confidenceBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    padding: '5px 8px',
+    color: THEME.textSecondary,
+    backgroundColor: 'rgba(255, 255, 255, 0.055)',
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '999px',
+    fontSize: '10px',
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: '0.4px',
+  },
+  confidenceHigh: {
+    color: THEME.successGreen,
+    backgroundColor: THEME.successSoft,
+    borderColor: 'rgba(53, 208, 127, 0.30)',
+  },
+  confidenceMedium: {
+    color: THEME.accentGold,
+    backgroundColor: THEME.goldSoft,
+    borderColor: 'rgba(242, 201, 76, 0.30)',
+  },
+  confidenceLow: {
+    color: THEME.dangerRed,
+    backgroundColor: THEME.dangerSoft,
+    borderColor: 'rgba(255, 69, 58, 0.28)',
+  },
+  analyzeButton: {
+    width: '100%',
+    minHeight: '46px',
+    padding: '12px 14px',
+    color: THEME.textPrimary,
+    background: 'linear-gradient(135deg, #FF3B30, #DA291C)',
+    border: '1px solid rgba(255, 255, 255, 0.14)',
+    borderRadius: '999px',
+    fontSize: '14px',
+    fontWeight: '900',
+    cursor: 'pointer',
+  },
+  aiMealSecondaryButton: {
+    width: '100%',
+    minHeight: '46px',
+    padding: '12px 14px',
+    color: THEME.textPrimary,
+    backgroundColor: 'rgba(255, 255, 255, 0.055)',
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '999px',
+    fontSize: '14px',
+    fontWeight: '800',
+    cursor: 'pointer',
+  },
+  aiMealRemoveButton: {
+    padding: '6px 9px',
+    color: THEME.dangerRed,
+    backgroundColor: THEME.dangerSoft,
+    border: '1px solid rgba(255, 69, 58, 0.24)',
+    borderRadius: '999px',
+    fontSize: '11px',
+    fontWeight: '800',
+    cursor: 'pointer',
+  },
+  addAiMealItemButton: {
+    width: '100%',
+    marginTop: '12px',
+    padding: '12px',
+    color: THEME.accentGold,
+    backgroundColor: THEME.goldSoft,
+    border: '1px solid rgba(242, 201, 76, 0.28)',
+    borderRadius: '999px',
+    fontSize: '14px',
+    fontWeight: '900',
+    cursor: 'pointer',
+  },
+  aiMealNotes: {
+    margin: '14px 0 0',
+    padding: '12px',
+    color: THEME.textSecondary,
+    backgroundColor: 'rgba(255, 255, 255, 0.045)',
+    border: `1px solid ${THEME.border}`,
+    borderRadius: '14px',
+    fontSize: '12px',
+    lineHeight: 1.5,
+  },
+  aiMealSaveActions: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 0.8fr)',
+    gap: '10px',
+    marginTop: '16px',
+    paddingBottom: '8px',
+  },
+  saveMealButton: {
+    width: '100%',
+    minHeight: '48px',
+    padding: '13px 14px',
+    color: THEME.textPrimary,
+    background: 'linear-gradient(135deg, #35D07F, #178E52)',
+    border: '1px solid rgba(53, 208, 127, 0.40)',
+    borderRadius: '999px',
+    fontSize: '14px',
+    fontWeight: '900',
+    cursor: 'pointer',
+    boxShadow: '0 16px 34px rgba(53, 208, 127, 0.18)',
+  },
+  aiMealDisclaimer: {
+    margin: '16px 0 0',
+    color: THEME.textSecondary,
+    fontSize: '11px',
+    lineHeight: 1.45,
+    textAlign: 'center',
   },
   chartFrame: {
     width: '100%',
