@@ -12,6 +12,21 @@ dist
 dist-ssr
 *.local
 
+# Local environment and credential files
+.env
+.env.*
+!.env.example
+*.pem
+*.p8
+*.p12
+*.key
+*service-account*.json
+*serviceAccount*.json
+GoogleService-Info.plist
+google-services.json
+.secret.local
+.runtimeconfig.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

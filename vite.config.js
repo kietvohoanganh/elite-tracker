@@ -113,8 +113,8 @@ const handleParseWorkoutImageRequest = async (req, res) => {
   }
 }
 
-const workoutImageParserPlugin = () => ({
-  name: 'local-workout-image-parser',
+const localApiPlugin = () => ({
+  name: 'local-api',
   configureServer(server) {
     server.middlewares.use('/api/parse-workout-image', handleParseWorkoutImageRequest)
   },
@@ -125,7 +125,10 @@ const workoutImageParserPlugin = () => ({
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), workoutImageParserPlugin()],
+  plugins: [
+    react(),
+    localApiPlugin(),
+  ],
   server: {
     host: '127.0.0.1',
     port: 5174,

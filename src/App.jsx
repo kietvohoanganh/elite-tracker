@@ -283,20 +283,6 @@ const WorkoutExerciseBlock = memo(function WorkoutExerciseBlock({
   );
 });
 
-// 4. SEASONING DATABASE 
-const SEASONING_DATABASE = [
-  { key: 'soySauce', label: 'Soy Sauce', kcal: 5 },
-  { key: 'fishSauce', label: 'Fish Sauce', kcal: 5 },
-  { key: 'msg', label: 'MSG / Bouillon', kcal: 0 },
-  { key: 'oysterSauce', label: 'Oyster Sauce', kcal: 15 },
-  { key: 'sugar', label: 'Added Sugar', kcal: 20 },
-  { key: 'sesameOil', label: 'Sesame Oil', kcal: 40 },
-  { key: 'chiliOil', label: 'Chili Oil (Sa Tế)', kcal: 45 },
-  { key: 'peanutSauce', label: 'Peanut Sauce', kcal: 50 },
-  { key: 'coconutMilk', label: 'Coconut Milk', kcal: 50 },
-  { key: 'scallionOil', label: 'Scallion Oil (Mỡ hành)', kcal: 60 }
-];
-
 export default function App() {
   // --- STATE MANAGEMENT ---
   const [user, setUser] = useState(null);
@@ -304,9 +290,6 @@ export default function App() {
   const [authStartupSlow, setAuthStartupSlow] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [foodSearch, setFoodSearch] = useState('');
-  const [foodResults, setFoodResults] = useState([]);
-  const [isSearchingFood, setIsSearchingFood] = useState(false);
   const [exerciseSearchQuery, setExerciseSearchQuery] = useState('');
   // --- TAB PERSISTENCE STATE ---
   const [activeTab, setActiveTab] = useState(getInitialActiveTab);
@@ -422,11 +405,7 @@ export default function App() {
     setDynamicTDEE(Math.round(calculatedTDEE));
   };
   
-  // NUTRITION MODAL STATES 
-  const [selectedFood, setSelectedFood] = useState(null);
-  const [foodWeight, setFoodWeight] = useState(100);
-  const [cookingMethod, setCookingMethod] = useState('raw_boiled');
-  const [activeSeasonings, setActiveSeasonings] = useState({});
+  // AI NUTRITION STATES
   const [aiMealInputMode, setAiMealInputMode] = useState('');
   const [mealPhotoPreview, setMealPhotoPreview] = useState('');
   const [mealPhotoBase64, setMealPhotoBase64] = useState('');
@@ -458,8 +437,7 @@ export default function App() {
     showCreateExerciseModal ||
     showTemplateModal ||
     showImportTemplateModal ||
-    selectedExerciseHistoryName ||
-    selectedFood
+    selectedExerciseHistoryName
   );
 
   const shouldLoadExerciseLibrary = Boolean(
@@ -963,8 +941,6 @@ export default function App() {
       : workoutHistory
   ), [selectedDate, workoutHistory]);
 
-  const visibleFoodResults = useMemo(() => foodResults, [foodResults]);
-
   const aiMealTotals = useMemo(() => aiMealReviewItems.reduce((totals, item) => ({
     grams: totals.grams + clampNutritionValue(item.estimatedGrams),
     kcal: totals.kcal + clampNutritionValue(item.kcal),
@@ -978,47 +954,6 @@ export default function App() {
     carbs: 0,
     fat: 0,
   }), [aiMealReviewItems]);
-
-  // Function to search generic foods via USDA FoodData Central API (Upgraded Nutrient Parsing)
-  const searchFood = async () => {
-    if (!foodSearch.trim()) return;
-    setIsSearchingFood(true);
-    try {
-      const response = await fetch(`https://api.nal.usda.gov/fdc/v1/foods/search?api_key=PAZkSKwUUNLnxrIKC82rU0fCF24iGu2Qa1jsoLIe&query=${encodeURIComponent(foodSearch)}&dataType=Foundation,SR%20Legacy&pageSize=10`);
-      const data = await response.json();
-
-      if (!data.foods) {
-        setFoodResults([]);
-        setIsSearchingFood(false);
-        return;
-      }
-
-      const formattedResults = data.foods.map(p => {
-        // CẬP NHẬT: Quét chéo cả ID mới lẫn Number cũ để không sót Macros
-        const getNutrient = (id, num) => {
-          const nutrient = p.foodNutrients.find(n => n.nutrientId === id || n.nutrientNumber === num);
-          return nutrient ? Math.round(nutrient.value) : 0;
-        };
-        
-        const cleanName = p.description.toLowerCase().replace(/\b\w/g, l => l.toUpperCase());
-
-        return {
-          id: p.fdcId,
-          name: cleanName,
-          brand: "(Generic/Raw Food)",
-          kcal: getNutrient(1008, '208'), // Energy
-          protein: getNutrient(1003, '203'), // Protein
-          fat: getNutrient(1004, '204'), // Total Lipid (Fat)
-          carbs: getNutrient(1005, '205') // Carbohydrate
-        };
-      }).filter(food => food.kcal > 0); 
-
-      setFoodResults(formattedResults);
-    } catch (error) {
-      alert("Error fetching food database: " + error.message);
-    }
-    setIsSearchingFood(false);
-  };
 
   const clearAiMeal = () => {
     if (mealPhotoInputRef.current) {
@@ -1288,99 +1223,6 @@ export default function App() {
       setAiMealError(`Could not save this meal: ${error?.message || 'Unknown database error.'}`);
     } finally {
       setIsSavingAiMeal(false);
-    }
-  };
-
-  const openFoodModal = (food) => {
-    setSelectedFood(food);
-    setFoodWeight(100);
-    setCookingMethod('raw_boiled');
-    
-    const initialSeasonings = {};
-    SEASONING_DATABASE.forEach(s => { initialSeasonings[s.key] = false; });
-    setActiveSeasonings(initialSeasonings);
-  };
-
-  const confirmAndLogFood = async () => {
-    if (!selectedFood) return;
-
-    const cookingModifiers = { raw_boiled: 0, grilled: 20, stir_fried: 50, deep_fried: 100 };
-    let totalSeasoningKcal = 0;
-    SEASONING_DATABASE.forEach(seasoning => {
-      if (activeSeasonings[seasoning.key]) totalSeasoningKcal += seasoning.kcal;
-    });
-
-    const weightRatio = parseFloat(foodWeight) / 100;
-    
-    const baseKcal = selectedFood.kcal;
-    const extraKcal = cookingModifiers[cookingMethod] + totalSeasoningKcal;
-    const finalCalculatedKcal = Math.round((baseKcal + extraKcal) * weightRatio);
-
-    const calculatedProtein = Math.round((selectedFood.protein || 0) * weightRatio);
-    const calculatedCarbs = Math.round((selectedFood.carbs || 0) * weightRatio);
-    const calculatedFat = Math.round((selectedFood.fat || 0) * weightRatio);
-
-    const todayId = getTodayDocId();
-    const logRef = doc(db, "users", user.uid, "daily_logs", todayId);
-
-    try {
-      const docSnap = await getDoc(logRef);
-      let currentFoods = [];
-      let currentCalories = 0;
-      let currentWeight = ''; 
-      
-      let currentProtein = 0;
-      let currentCarbs = 0;
-      let currentFat = 0;
-
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        currentFoods = data.foods || [];
-        currentCalories = data.calories || 0;
-        currentWeight = data.weight || '';
-        currentProtein = data.protein || 0;
-        currentCarbs = data.carbs || 0;
-        currentFat = data.fat || 0;
-      }
-
-      const existingFoodIndex = currentFoods.findIndex(f => f.name === selectedFood.name);
-      
-      if (existingFoodIndex >= 0) {
-        currentFoods[existingFoodIndex].weight += parseFloat(foodWeight);
-        currentFoods[existingFoodIndex].kcal += finalCalculatedKcal;
-        currentFoods[existingFoodIndex].protein = (currentFoods[existingFoodIndex].protein || 0) + calculatedProtein;
-        currentFoods[existingFoodIndex].carbs = (currentFoods[existingFoodIndex].carbs || 0) + calculatedCarbs;
-        currentFoods[existingFoodIndex].fat = (currentFoods[existingFoodIndex].fat || 0) + calculatedFat;
-        currentFoods[existingFoodIndex].time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-      } else {
-        currentFoods.push({
-          name: selectedFood.name,
-          weight: parseFloat(foodWeight),
-          kcal: finalCalculatedKcal,
-          protein: calculatedProtein,
-          carbs: calculatedCarbs,
-          fat: calculatedFat,
-          time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-        });
-      }
-
-      await setDoc(logRef, {
-        timestamp: docSnap.exists() ? docSnap.data().timestamp : Date.now(),
-        date: new Date().toLocaleDateString('en-US'),
-        foods: currentFoods,
-        calories: currentCalories + finalCalculatedKcal,
-        protein: currentProtein + calculatedProtein,
-        carbs: currentCarbs + calculatedCarbs,
-        fat: currentFat + calculatedFat,
-        weight: currentWeight
-      }, { merge: true });
-
-      alert(`Added ${foodWeight}g of ${selectedFood.name}. Macros updated!`);
-      setSelectedFood(null);
-      setFoodSearch('');
-      setFoodResults([]);
-    } catch (e) {
-      alert("Database Error: " + e.message);
     }
   };
 
@@ -2424,10 +2266,10 @@ export default function App() {
           </div>
         )}
 
-        {/* NUTRITION SEARCH TAB */}
+        {/* AI NUTRITION TAB */}
         {visibleTab === 'food' && (
           <div className="tab-scene" style={{padding: '20px'}}>
-            <h2 style={styles.pageTitle}>Nutrition Search</h2>
+            <h2 style={styles.pageTitle}>AI Nutrition</h2>
 
             <div className="panel-card" style={styles.aiMealCard}>
               <div>
@@ -2683,41 +2525,6 @@ export default function App() {
 
               <p style={styles.aiMealDisclaimer}>AI estimates may be inaccurate. Please review before saving.</p>
             </div>
-            
-            <div style={{display: 'flex', gap: '10px', marginBottom: '15px'}}>
-              <input 
-                type="text" 
-                placeholder="Search food (e.g., rice, chicken)..." 
-                value={foodSearch} 
-                onChange={(e) => setFoodSearch(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && searchFood()}
-                style={{...styles.authInput, marginBottom: 0, flex: 1}} 
-              />
-              <button className="mu-button mu-main-btn" onClick={searchFood} style={{...styles.mainBtn, width: '80px', borderRadius: '8px'}}>
-                {isSearchingFood ? "..." : "Search"}
-              </button>
-            </div>
-
-            {foodResults.length > 0 ? (
-              <div className="panel-card" style={styles.resultsPanel}>
-                {visibleFoodResults.map((food) => (
-                  <div key={food.id} style={styles.foodResultRow}>
-                    <div style={{textAlign: 'left', flex: 1}}>
-                      <p style={{margin: '0 0 5px 0', fontSize: '15px', fontWeight: 'bold'}}>{food.name} <span style={{fontSize: '12px', color: THEME.textSecondary, fontWeight: 'normal'}}>{food.brand}</span></p>
-                      <p style={{margin: 0, fontSize: '12px', color: THEME.textSecondary}}>
-                        <span style={{color: THEME.dangerRed}}>P: {food.protein}g</span> | <span style={{color: THEME.macroCarbs}}>C: {food.carbs}g</span> | <span style={{color: THEME.accentGold}}>F: {food.fat}g</span> 
-                      </p>
-                    </div>
-                    <div style={{display: 'flex', flexDirection: 'column', alignItems: 'flex-end', marginLeft: '10px'}}>
-                      <span style={{color: THEME.accentGold, fontWeight: 'bold', fontSize: '16px', marginBottom: '5px'}}>{food.kcal} kcal</span>
-                      <button className="mu-button mu-secondary-btn" onClick={() => openFoodModal(food)} style={styles.smallSecondaryBtn}>Customize</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p style={{textAlign: 'center', color: THEME.textSecondary, marginTop: '40px'}}>Search for an item to see its nutritional value per 100g.</p>
-            )}
           </div>
         )}
 
@@ -3355,64 +3162,6 @@ export default function App() {
         </div>
       )}
 
-      {/* FOOD CUSTOMIZATION MODAL */}
-      {selectedFood && (
-        <div className="modal-surface" style={styles.modalOverlay}>
-          <div style={styles.modalHeader}>
-            <span className="mu-icon-button" onClick={() => setSelectedFood(null)} style={styles.modalClose}>✕</span>
-            <h2 style={{margin: 0, fontSize: '18px'}}>Log Food</h2>
-            <span style={{width: '24px'}}></span>
-          </div>
-
-          <div style={styles.foodModalBody}>
-            <h3 style={{fontSize: '20px', color: THEME.accentGold, marginBottom: '5px'}}>{selectedFood.name}</h3>
-            <p style={{color: THEME.textSecondary, fontSize: '14px', marginBottom: '20px'}}>Base: {selectedFood.kcal} kcal / 100g</p>
-
-            <label style={{display: 'block', marginBottom: '8px', fontWeight: 'bold'}}>Weight (grams):</label>
-            <input 
-              type="number" 
-              value={foodWeight}
-              onChange={(e) => setFoodWeight(e.target.value)}
-              style={styles.authInput} 
-            />
-
-            <label style={{display: 'block', margin: '15px 0 8px 0', fontWeight: 'bold'}}>Cooking Method:</label>
-            <select 
-              value={cookingMethod} 
-              onChange={(e) => setCookingMethod(e.target.value)}
-              style={{...styles.authInput, appearance: 'none'}}
-            >
-              <option value="raw_boiled">Raw / Boiled / Steamed (+0 kcal)</option>
-              <option value="grilled">Grilled / Roasted (+20 kcal)</option>
-              <option value="stir_fried">Stir-Fried / Pan-Fried (+50 kcal)</option>
-              <option value="deep_fried">Deep-Fried (+100 kcal)</option>
-            </select>
-
-            <label style={{display: 'block', margin: '20px 0 10px 0', fontWeight: 'bold'}}>Condiments & Seasonings (per 100g):</label>
-            <div style={styles.seasoningGrid}>
-              {SEASONING_DATABASE.map(seasoning => (
-                <div key={seasoning.key} style={{display: 'flex', alignItems: 'flex-start'}}>
-                  <input 
-                    type="checkbox" 
-                    id={`condiment_${seasoning.key}`}
-                    checked={activeSeasonings[seasoning.key] || false}
-                    onChange={(e) => setActiveSeasonings(prev => ({...prev, [seasoning.key]: e.target.checked}))}
-                    style={{width: '18px', height: '18px', marginRight: '8px', accentColor: THEME.primaryRed, flexShrink: 0, marginTop: '2px'}}
-                  />
-                  <label htmlFor={`condiment_${seasoning.key}`} style={{fontSize: '13px', cursor: 'pointer', lineHeight: '1.4'}}>
-                    <span style={{color: THEME.textPrimary, display: 'block'}}>{seasoning.label}</span>
-                    <span style={{color: THEME.textSecondary, fontSize: '11px'}}>{seasoning.kcal > 0 ? `+${seasoning.kcal} kcal` : '0 kcal'}</span>
-                  </label>
-                </div>
-              ))}
-            </div>
-
-            <button className="mu-button mu-main-btn" onClick={confirmAndLogFood} style={{...styles.mainBtn, ...styles.foodModalConfirmButton}}>
-              Confirm & Log
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -4039,32 +3788,6 @@ const styles = {
     borderRadius: '20px',
     border: `1px solid rgba(242, 201, 76, 0.38)`,
   },
-  resultsPanel: {
-    background: 'linear-gradient(160deg, rgba(255, 255, 255, 0.085), rgba(255, 255, 255, 0.04))',
-    borderRadius: '24px',
-    padding: '12px',
-    maxHeight: '60vh',
-    overflowY: 'auto',
-    border: `1px solid ${THEME.border}`,
-    boxShadow: THEME.shadow,
-  },
-  foodResultRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '15px 4px',
-    borderBottom: `1px solid ${THEME.border}`,
-  },
-  smallSecondaryBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    color: THEME.textPrimary,
-    border: `1px solid ${THEME.redMedium}`,
-    borderRadius: '999px',
-    padding: '6px 11px',
-    fontWeight: '800',
-    cursor: 'pointer',
-  },
-
   templateSection: {
     marginTop: '8px',
   },
@@ -4708,18 +4431,6 @@ const styles = {
     backdropFilter: 'blur(18px)',
   },
   modalClose: { fontSize: '24px', cursor: 'pointer', color: THEME.textSecondary },
-  foodModalBody: {
-    flex: 1,
-    minHeight: 0,
-    overflowY: 'auto',
-    padding: '20px 20px calc(96px + env(safe-area-inset-bottom))',
-  },
-  foodModalConfirmButton: {
-    position: 'sticky',
-    bottom: 'max(16px, env(safe-area-inset-bottom))',
-    zIndex: 2,
-    marginTop: '10px',
-  },
   exercisePickerShell: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 },
   exerciseSearchPanel: { padding: '20px clamp(18px, 4vw, 28px)', borderBottom: `1px solid ${THEME.border}`, display: 'flex', alignItems: 'center', gap: '10px' },
   exercisePickerList: { overflowY: 'auto', padding: '4px clamp(18px, 4vw, 28px) 54px', flex: 1 },
@@ -4746,6 +4457,5 @@ const styles = {
   createExerciseActions: { display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px', paddingBottom: 'calc(20px + env(safe-area-inset-bottom))' },
   cancelBtn: { flex: 1, padding: '14px', backgroundColor: 'rgba(255, 255, 255, 0.055)', color: THEME.textSecondary, border: `1px solid ${THEME.border}`, borderRadius: '999px', fontSize: '15px', fontWeight: '800', cursor: 'pointer' },
   saveExerciseBtn: { flex: 1, padding: '14px', background: 'linear-gradient(135deg, #FF3B30, #DA291C)', color: THEME.textPrimary, border: '1px solid rgba(255, 255, 255, 0.14)', borderRadius: '999px', fontSize: '15px', fontWeight: '900', cursor: 'pointer' },
-  seasoningGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', backgroundColor: 'rgba(255, 255, 255, 0.055)', padding: '16px', borderRadius: '18px', border: `1px solid ${THEME.border}`, marginBottom: '20px' },
   navArrow: { backgroundColor: 'transparent', color: THEME.primaryRed, border: 'none', fontSize: '14px', fontWeight: '800', cursor: 'pointer', transition: 'opacity 0.2s, color 0.2s' }
 };
