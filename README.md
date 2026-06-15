@@ -87,41 +87,6 @@ flowchart TD
 Meal analysis uses Firebase AI Logic directly from the application. The project
 does not require a third-party food-search API key.
 
-## Getting Started
-
-### Requirements
-
-- Node.js 20 or newer
-- npm
-- A Firebase project
-- Xcode for iOS development
-
-### Installation
-
-```bash
-git clone https://github.com/kietvohoanganh/hypertrophy-tracker.git
-cd hypertrophy-tracker
-npm install
-cp .env.example .env.local
-npm run dev
-```
-
-Vite serves the local application at `http://127.0.0.1:5174`.
-
-## Firebase Setup
-
-1. Create a Firebase web application.
-2. Enable Email/Password Authentication.
-3. Create a Cloud Firestore database.
-4. Replace the Firebase web configuration in `src/App.jsx`.
-5. Deploy the rules in `firestore.rules`.
-6. Enable Firebase AI Logic for the project.
-7. Enable Firebase App Check before production use.
-
-Firebase web configuration identifies the project and is expected to be present
-in client code. Data access must be protected by Authentication, Firestore
-Security Rules, API restrictions, and App Check.
-
 ## AI Meal Analysis
 
 The meal analyzer supports two input modes:
