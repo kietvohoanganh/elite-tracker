@@ -5,8 +5,8 @@
 
   **A mobile-first training and nutrition companion for consistent, measurable progress.**
 
-  [Open the Web App](https://hypertrophy-tracker-chi.vercel.app) ·
-  [View the Repository](https://github.com/kietvohoanganh/hypertrophy-tracker)
+  [Open the Web App](https://elitetracker.vercel.app/) ·
+  [View the Repository](https://github.com/kietvohoanganh/elite-tracker.git)
 
   [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
   [![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vite.dev/)
@@ -164,15 +164,6 @@ users/{userId}/preferences/exercises
 ├── capacitor.config.ts
 └── vite.config.js
 ```
-
-## Production Checklist
-
-- Enable Firebase App Check for web and iOS.
-- Confirm the Firebase API key is restricted to required Firebase services.
-- Review Firebase AI Logic quotas, usage, and billing alerts.
-- Test Firestore rules with authenticated and unauthenticated requests.
-- Validate camera permissions and meal analysis on a physical iOS device.
-- Run `npm run lint`, `npm run build`, and `npx cap sync ios`.
 
 ---
 
