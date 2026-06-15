@@ -3,7 +3,7 @@
 
   # Elite Tracker
 
-  **A mobile-first training and nutrition companion for consistent, measurable progress.**
+  **A training and nutrition companion for consistent, measurable progress.**
 
   [Open the Web App](https://elitetracker.vercel.app/) ·
   [View the Repository](https://github.com/kietvohoanganh/elite-tracker.git)
