@@ -17,7 +17,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import ExercisePicker from './components/ExercisePicker';
 import FitnessIcon from './components/FitnessIcon';
 import { AppHeader, BrandLockup, EmptyState, PageHeader, PrimaryNavigation } from './components/AppShell';
-import WorkoutMotion, { RevealSentence } from './components/WorkoutMotion';
+import WorkoutMotion from './components/WorkoutMotion';
 import heroArtwork from './assets/hero.png';
 import {
   convertTemplateToActiveWorkout,
@@ -2056,7 +2056,6 @@ export default function App() {
                           </span>
                           intent.
                         </h1>
-                        <RevealSentence>Log the work that matters, then let the trend tell the story.</RevealSentence>
                         <button className="mu-button mu-main-btn hero-primary-action" onClick={startWorkout} style={styles.mainBtn}>
                           <FitnessIcon name="play" size={18} /> Start empty workout
                         </button>

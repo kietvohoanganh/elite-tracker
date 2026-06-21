@@ -599,16 +599,6 @@ label.mu-button {
   will-change: transform, opacity;
 }
 
-.workout-hero__statement {
-  max-width: 31rem;
-  margin: 20px auto 24px;
-  color: var(--paper-muted);
-  font-size: clamp(0.95rem, 3.5vw, 1.08rem);
-  line-height: 1.55;
-}
-
-.workout-hero__statement span { display: inline; }
-
 .hero-primary-action {
   width: auto !important;
   min-width: min(100%, 230px);
