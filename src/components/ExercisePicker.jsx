@@ -1,4 +1,5 @@
 import { memo, useMemo } from 'react';
+import FitnessIcon from './FitnessIcon';
 
 const getExerciseKey = (exercise) => (
   exercise.exerciseId || `${exercise.muscleGroup}-${exercise.exerciseName}`
@@ -56,6 +57,9 @@ function ExercisePicker({
     <div style={compact ? styles.templatePickerShell : styles.exercisePickerShell}>
       <div style={compact ? styles.templatePickerSearchPanel : styles.exerciseSearchPanel}>
         <input
+          aria-label="Search exercises"
+          type="search"
+          autoComplete="off"
           style={{...styles.authInput, marginBottom: 0, flex: 1}}
           placeholder="Search exercise by name..."
           value={searchQuery}
@@ -71,7 +75,7 @@ function ExercisePicker({
           aria-label="Create Exercise"
           title="Create Exercise"
         >
-          +
+          <FitnessIcon name="plus" size={21} />
         </button>
       </div>
 
@@ -89,7 +93,7 @@ function ExercisePicker({
               style={styles.emptyCreateExerciseBtn}
               aria-label="Create Exercise"
             >
-              +
+              <FitnessIcon name="plus" size={21} />
             </button>
           </div>
         ) : (
@@ -115,18 +119,21 @@ function ExercisePicker({
                   >
                     <div style={styles.exercisePickerPrimary}>
                       {onToggleFavorite && (
-                        <span
+                        <button
+                          type="button"
                           onClick={(event) => onToggleFavorite(event, exercise)}
+                          className={`favorite-button${isFav ? ' favorite-button--selected' : ''}`}
                           style={{
-                            fontSize: '22px',
                             cursor: 'pointer',
                             color: isFav ? theme.accentGold : theme.border,
                             transition: 'color 0.2s',
                             flexShrink: 0,
                           }}
+                          aria-label={`${isFav ? 'Remove' : 'Add'} ${exercise.exerciseName} ${isFav ? 'from' : 'to'} favorites`}
+                          aria-pressed={isFav}
                         >
-                          {isFav ? '★' : '☆'}
-                        </span>
+                          <FitnessIcon name="favorites" size={20} />
+                        </button>
                       )}
                       <div style={{minWidth: 0}}>
                         <p style={compact ? styles.templateLibraryName : {
@@ -161,6 +168,7 @@ function ExercisePicker({
                           ...(compact ? styles.templateLibraryAddBtn : styles.addExerciseIconBtn),
                           opacity: selected ? 0.45 : 1,
                         }}
+                        aria-label={`${selected ? 'Selected' : 'Add'} ${exercise.exerciseName}`}
                       >
                         {selectLabel}
                       </button>

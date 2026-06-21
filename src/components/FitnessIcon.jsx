@@ -184,6 +184,57 @@ const IconPaths = ({ name }) => {
           <path d="M17.8 7.2c.8.8 1.2 1.7 1.3 2.8" />
         </>
       );
+    case 'arrowLeft':
+      return (
+        <>
+          <path d="M19 12H5" />
+          <path d="m10.5 6.5-5.5 5.5 5.5 5.5" />
+        </>
+      );
+    case 'arrowRight':
+      return (
+        <>
+          <path d="M5 12h14" />
+          <path d="m13.5 6.5 5.5 5.5-5.5 5.5" />
+        </>
+      );
+    case 'chevronDown':
+      return <path d="m6.5 9 5.5 5.5L17.5 9" />;
+    case 'close':
+      return (
+        <>
+          <path d="m6 6 12 12" />
+          <path d="M18 6 6 18" />
+        </>
+      );
+    case 'plus':
+      return (
+        <>
+          <path d="M12 5v14" />
+          <path d="M5 12h14" />
+        </>
+      );
+    case 'check':
+      return <path d="m5.5 12.5 4.1 4.1 8.9-9.1" />;
+    case 'play':
+      return <path d="m9 7 8 5-8 5V7Z" />;
+    case 'edit':
+      return (
+        <>
+          <path d="M5 19h3.4L19 8.4 15.6 5 5 15.6V19Z" />
+          <path d="m13.8 6.8 3.4 3.4" />
+        </>
+      );
+    case 'delete':
+      return (
+        <>
+          <path d="M5.5 7h13" />
+          <path d="M9 7V4.8h6V7" />
+          <path d="m7.2 7 .8 12h8l.8-12" />
+          <path d="M10.2 10.5v5" />
+          <path d="M13.8 10.5v5" />
+        </>
+      );
     default:
       return null;
   }

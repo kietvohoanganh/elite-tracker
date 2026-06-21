@@ -16,6 +16,9 @@ import { Capacitor } from '@capacitor/core';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import ExercisePicker from './components/ExercisePicker';
 import FitnessIcon from './components/FitnessIcon';
+import { AppHeader, BrandLockup, EmptyState, PageHeader, PrimaryNavigation } from './components/AppShell';
+import WorkoutMotion, { RevealSentence } from './components/WorkoutMotion';
+import heroArtwork from './assets/hero.png';
 import {
   convertTemplateToActiveWorkout,
   createDefaultTemplateSet,
@@ -70,25 +73,25 @@ try {
 }
 
 const THEME = {
-  primaryRed: '#DA291C',
-  primaryRedHover: '#FF3B30',
-  bgBlack: '#050506',
-  bgDark: '#101114',
-  cardBg: 'rgba(24, 25, 30, 0.86)',
-  border: 'rgba(255, 255, 255, 0.105)',
-  textPrimary: '#F8FAFC',
-  textSecondary: '#A7ADB8',
-  accentGold: '#F2C94C',
-  successGreen: '#35D07F',
-  dangerRed: '#FF453A',
-  redSoft: 'rgba(218, 41, 28, 0.16)',
-  redMedium: 'rgba(218, 41, 28, 0.28)',
-  goldSoft: 'rgba(242, 201, 76, 0.16)',
-  successSoft: 'rgba(53, 208, 127, 0.16)',
-  dangerSoft: 'rgba(255, 69, 58, 0.14)',
+  primaryRed: '#FF6B45',
+  primaryRedHover: '#FF805F',
+  bgBlack: '#0A0C0E',
+  bgDark: '#15181C',
+  cardBg: 'rgba(24, 27, 31, 0.94)',
+  border: 'rgba(245, 242, 235, 0.12)',
+  textPrimary: '#F7F5EF',
+  textSecondary: '#A4A8B0',
+  accentGold: '#D8F36A',
+  successGreen: '#69D7A0',
+  dangerRed: '#FF6A68',
+  redSoft: 'rgba(255, 107, 69, 0.13)',
+  redMedium: 'rgba(255, 107, 69, 0.28)',
+  goldSoft: 'rgba(216, 243, 106, 0.12)',
+  successSoft: 'rgba(105, 215, 160, 0.13)',
+  dangerSoft: 'rgba(255, 106, 104, 0.12)',
   overlay: 'rgba(0, 0, 0, 0.72)',
   shadow: '0 22px 58px rgba(0, 0, 0, 0.46)',
-  macroCarbs: '#D6AE35',
+  macroCarbs: '#9BB7FF',
 };
 
 // 2. EXERCISE DATABASE
@@ -113,7 +116,6 @@ const MAIN_NAV_ITEMS = [
   { id: 'food', label: 'Nutrition', icon: 'nutrition' },
   { id: 'you', label: 'Profile', icon: 'profile' },
 ];
-const HEAVY_TABS = new Set(['history', 'tdee', 'food']);
 const CHART_HEIGHT = 260;
 
 const clampNutritionValue = (value) => {
@@ -201,17 +203,22 @@ const TimerDisplay = memo(function TimerDisplay({ startedAt, style }) {
   const [elapsedSeconds, setElapsedSeconds] = useState(() => getElapsedSeconds(startedAt));
 
   useEffect(() => {
-    setElapsedSeconds(getElapsedSeconds(startedAt));
-    if (!startedAt) return undefined;
+    const syncTimer = window.setTimeout(() => {
+      setElapsedSeconds(getElapsedSeconds(startedAt));
+    }, 0);
+    if (!startedAt) return () => window.clearTimeout(syncTimer);
 
     const intervalId = window.setInterval(() => {
       setElapsedSeconds(getElapsedSeconds(startedAt));
     }, 1000);
 
-    return () => window.clearInterval(intervalId);
+    return () => {
+      window.clearTimeout(syncTimer);
+      window.clearInterval(intervalId);
+    };
   }, [startedAt]);
 
-  return <h1 style={style}>{formatTime(elapsedSeconds)}</h1>;
+  return <p className="workout-timer" style={style}>{formatTime(elapsedSeconds)}</p>;
 });
 
 const WorkoutExerciseBlock = memo(function WorkoutExerciseBlock({
@@ -230,7 +237,7 @@ const WorkoutExerciseBlock = memo(function WorkoutExerciseBlock({
         <span style={styles.prevCol}>Prev</span>
         <span style={styles.inputColTitle}>kg</span>
         <span style={styles.inputColTitle}>Reps</span>
-        <span style={styles.checkCol}>✓</span>
+        <span style={styles.checkCol} aria-label="Completed"><FitnessIcon name="check" size={16} /></span>
       </div>
       {sets.map((set, idx) => (
         <div className={set.completed ? 'completed-set' : ''} key={idx} style={{
@@ -271,13 +278,15 @@ const WorkoutExerciseBlock = memo(function WorkoutExerciseBlock({
                 borderColor: set.completed ? THEME.successGreen : THEME.border
               }}
             >
-              ✓
+              {set.completed && <FitnessIcon name="check" size={17} />}
             </button>
           </div>
         </div>
       ))}
       <div style={{textAlign: 'center', marginTop: '10px'}}>
-        <span onClick={() => onAddSet(exercise)} style={styles.addSetText}>+ Add Set</span>
+        <button type="button" className="add-set-button" onClick={() => onAddSet(exercise)} style={styles.addSetText}>
+          <FitnessIcon name="plus" size={17} /> Add set
+        </button>
       </div>
     </div>
   );
@@ -293,45 +302,11 @@ export default function App() {
   const [exerciseSearchQuery, setExerciseSearchQuery] = useState('');
   // --- TAB PERSISTENCE STATE ---
   const [activeTab, setActiveTab] = useState(getInitialActiveTab);
-  const [deferredTab, setDeferredTab] = useState(() => {
-    const initialTab = getInitialActiveTab();
-    return HEAVY_TABS.has(initialTab) ? null : initialTab;
-  });
-  const [isTabTransitioning, setIsTabTransitioning] = useState(() => HEAVY_TABS.has(getInitialActiveTab()));
-  const tabTransitionFrameRef = useRef(null);
 
   useEffect(() => {
     localStorage.setItem('eliteTrackerTab', activeTab);
   }, [activeTab]);
 
-  useEffect(() => {
-    if (tabTransitionFrameRef.current) {
-      window.cancelAnimationFrame(tabTransitionFrameRef.current);
-      tabTransitionFrameRef.current = null;
-    }
-
-    if (!HEAVY_TABS.has(activeTab)) {
-      setDeferredTab(activeTab);
-      setIsTabTransitioning(false);
-      return undefined;
-    }
-
-    setIsTabTransitioning(true);
-    setDeferredTab(null);
-
-    tabTransitionFrameRef.current = window.requestAnimationFrame(() => {
-      setDeferredTab(activeTab);
-      setIsTabTransitioning(false);
-      tabTransitionFrameRef.current = null;
-    });
-
-    return () => {
-      if (tabTransitionFrameRef.current) {
-        window.cancelAnimationFrame(tabTransitionFrameRef.current);
-        tabTransitionFrameRef.current = null;
-      }
-    };
-  }, [activeTab]);
   // --- FAVORITE EXERCISES STATE ---
   // --- FAVORITE EXERCISES STATE (FIREBASE SYNCED) ---
   const [favoriteExercises, setFavoriteExercises] = useState([]);
@@ -372,6 +347,7 @@ export default function App() {
   const [currentTemplateId, setCurrentTemplateId] = useState(null);
   const [currentTemplateName, setCurrentTemplateName] = useState('');
   const workoutStartedAtRef = useRef(null);
+  const [workoutStartedAt, setWorkoutStartedAt] = useState(null);
   
   // COACHING MODULE STATES
   const [profileAge, setProfileAge] = useState(20);
@@ -445,8 +421,46 @@ export default function App() {
     activeTab === 'workout' &&
     (showExerciseModal || showCreateExerciseModal || showTemplateModal || showImportTemplateModal)
   );
-  const visibleTab = deferredTab;
+  const visibleTab = activeTab;
   const isTdeeTabVisible = visibleTab === 'tdee';
+
+  useEffect(() => {
+    if (!isAnyModalOpen) return undefined;
+
+    const previouslyFocused = document.activeElement;
+    const frame = window.requestAnimationFrame(() => {
+      const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+      const activeDialog = dialogs[dialogs.length - 1];
+      activeDialog?.querySelector('button, input, select, textarea, [tabindex]:not([tabindex="-1"])')?.focus();
+    });
+
+    const keepFocusInsideDialog = (event) => {
+      if (event.key !== 'Tab') return;
+      const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+      const activeDialog = dialogs[dialogs.length - 1];
+      if (!activeDialog) return;
+
+      const focusable = [...activeDialog.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')];
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', keepFocusInsideDialog);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener('keydown', keepFocusInsideDialog);
+      previouslyFocused?.focus?.();
+    };
+  }, [isAnyModalOpen, selectedExerciseHistoryName, showCreateExerciseModal, showExerciseModal, showImportTemplateModal, showTemplateModal]);
 
   useEffect(() => {
     if (!user || activeTab !== 'workout') return undefined;
@@ -739,12 +753,10 @@ export default function App() {
 
   const handleTabSelect = useCallback((nextTab) => {
     if (nextTab === activeTab) return;
-    setActiveTab(nextTab);
-  }, [activeTab]);
-
-  useEffect(() => {
     setIsBottomNavVisible(true);
-    previousScrollTopRef.current = contentScrollRef.current?.scrollTop || 0;
+    previousScrollTopRef.current = 0;
+    contentScrollRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+    setActiveTab(nextTab);
   }, [activeTab]);
 
   const getWorkoutDurationSeconds = useCallback(() => (
@@ -833,9 +845,13 @@ export default function App() {
   }, [dailyLogs, isTdeeTabVisible]);
 
   useEffect(() => {
-    setChartReady(false);
-    setChartSize({ width: 0, height: CHART_HEIGHT });
-    if (!isTdeeTabVisible || dailyLogs.length < 2 || weightTrendData.length < 2) return undefined;
+    if (!isTdeeTabVisible || dailyLogs.length < 2 || weightTrendData.length < 2) {
+      const resetTimer = window.setTimeout(() => {
+        setChartReady(false);
+        setChartSize({ width: 0, height: CHART_HEIGHT });
+      }, 0);
+      return () => window.clearTimeout(resetTimer);
+    }
 
     let resizeObserver = null;
     const syncChartSize = () => {
@@ -858,17 +874,19 @@ export default function App() {
       setChartReady(hasValidSize);
     };
 
-    const frameId = window.requestAnimationFrame(() => {
+    const syncTimer = window.setTimeout(() => {
+      setChartReady(false);
+      setChartSize({ width: 0, height: CHART_HEIGHT });
       syncChartSize();
 
       if (typeof ResizeObserver !== 'undefined' && chartFrameRef.current) {
         resizeObserver = new ResizeObserver(syncChartSize);
         resizeObserver.observe(chartFrameRef.current);
       }
-    });
+    }, 0);
 
     return () => {
-      window.cancelAnimationFrame(frameId);
+      window.clearTimeout(syncTimer);
       if (resizeObserver) resizeObserver.disconnect();
     };
   }, [dailyLogs.length, isTdeeTabVisible, weightTrendData.length]);
@@ -897,7 +915,7 @@ export default function App() {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const getCurrentWeek = () => {
+  const getCurrentWeek = useCallback(() => {
     const curr = new Date();
     curr.setDate(curr.getDate() + (weekOffset * 7));
     
@@ -921,9 +939,9 @@ export default function App() {
       });
     }
     return week;
-  };
+  }, [weekOffset]);
 
-  const currentWeekDays = useMemo(() => getCurrentWeek(), [weekOffset]);
+  const currentWeekDays = useMemo(() => getCurrentWeek(), [getCurrentWeek]);
 
   const workoutDayMatchStrings = useMemo(() => {
     const matches = new Set();
@@ -1248,7 +1266,9 @@ export default function App() {
 
   // --- WORKOUT LOGIC ---
   const startWorkout = () => {
-    workoutStartedAtRef.current = Date.now();
+    const startedAt = Date.now();
+    workoutStartedAtRef.current = startedAt;
+    setWorkoutStartedAt(startedAt);
     setIsWorkoutActive(true);
     setActiveWorkout({});
     setCurrentTemplateId(null);
@@ -1258,6 +1278,7 @@ export default function App() {
   const discardWorkout = () => {
     if(window.confirm("Are you sure you want to discard this session? All progress will be lost.")) {
       workoutStartedAtRef.current = null;
+      setWorkoutStartedAt(null);
       setIsWorkoutActive(false);
       setActiveWorkout({});
       setCurrentTemplateId(null);
@@ -1808,14 +1829,15 @@ export default function App() {
     }
   };
 
-  const startWorkoutFromTemplate = (template) => {
+  const startWorkoutFromTemplate = (template, startedAt) => {
     const templateWorkout = convertTemplateToActiveWorkout(template);
     if (Object.keys(templateWorkout).length === 0) {
       alert("This template has no exercises.");
       return;
     }
 
-    workoutStartedAtRef.current = Date.now();
+    workoutStartedAtRef.current = startedAt;
+    setWorkoutStartedAt(startedAt);
     setActiveWorkout(templateWorkout);
     setCurrentTemplateId(template.id);
     setCurrentTemplateName(template.name || '');
@@ -1881,6 +1903,7 @@ export default function App() {
 
       await addDoc(collection(db, "users", user.uid, "history"), historyDoc);
       workoutStartedAtRef.current = null;
+      setWorkoutStartedAt(null);
       setIsWorkoutActive(false);
       setActiveWorkout({});
       setCurrentTemplateId(null);
@@ -1941,23 +1964,63 @@ export default function App() {
   // --- RENDER FLOW ---
   if (authLoading) {
     return (
-      <div className="app-shell app-shell-loading" style={styles.appContainer}>
-        <div style={styles.loadingPanel}>
-          <p style={styles.loadingText}>{authStartupSlow ? 'Still loading your session...' : 'Loading...'}</p>
-        </div>
-      </div>
+      <main className="app-shell app-shell-loading" style={styles.appContainer} aria-live="polite">
+        <BrandLockup />
+        <div className="loading-indicator" aria-hidden="true"><span /><span /><span /></div>
+        <p style={styles.loadingText}>{authStartupSlow ? 'Still loading your session...' : 'Loading your training space...'}</p>
+      </main>
     );
   }
 
   if (!user) {
     return (
-      <div className="app-shell auth-screen" style={{...styles.appContainer, justifyContent: 'center', alignItems: 'center', padding: 'calc(40px + env(safe-area-inset-top)) 40px calc(40px + env(safe-area-inset-bottom))'}}>
-        <h1 style={styles.authTitle}>Elite Tracker</h1>
-        <input type="email" placeholder="Email" style={styles.authInput} onChange={(e) => setEmail(e.target.value)} />
-        <input type="password" placeholder="Password" style={styles.authInput} onChange={(e) => setPassword(e.target.value)} />
-        <button className="mu-button mu-main-btn" onClick={() => handleAuth('login')} style={styles.authButton}>Login</button>
-        <button className="mu-button mu-secondary-btn" onClick={() => handleAuth('signup')} style={{...styles.authButton, ...styles.secondaryButton, marginTop: '10px'}}>Sign Up</button>
-      </div>
+      <main className="app-shell auth-screen" style={styles.appContainer}>
+        <section className="auth-story" aria-labelledby="auth-title">
+          <BrandLockup />
+          <div className="auth-story__copy">
+            <p className="auth-kicker">Training, clearly measured</p>
+            <h1 id="auth-title">Every useful number, in one calm place.</h1>
+            <p>Plan sessions, log hard sets, review progress, and keep nutrition beside the work that drives it.</p>
+          </div>
+          <div className="auth-artwork" aria-hidden="true">
+            <img src={heroArtwork} alt="" />
+          </div>
+          <div className="auth-marquee" aria-hidden="true">
+            <div>TRAIN · RECOVER · REPEAT · TRACK · ADAPT · TRAIN · RECOVER · REPEAT ·</div>
+          </div>
+        </section>
+
+        <section className="auth-panel" aria-label="Sign in to Elite Tracker">
+          <div className="auth-panel__heading">
+            <p>Welcome back</p>
+            <h2>Continue your plan</h2>
+          </div>
+          <form onSubmit={(event) => { event.preventDefault(); handleAuth('login'); }}>
+            <label className="field-label" htmlFor="auth-email">Email address</label>
+            <input
+              id="auth-email"
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              placeholder="you@example.com"
+              style={styles.authInput}
+              onChange={(event) => setEmail(event.target.value)}
+            />
+            <label className="field-label" htmlFor="auth-password">Password</label>
+            <input
+              id="auth-password"
+              type="password"
+              autoComplete="current-password"
+              placeholder="At least 6 characters"
+              style={styles.authInput}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+            <button type="submit" className="mu-button mu-main-btn" style={styles.authButton}>Sign in</button>
+            <button type="button" className="mu-button mu-secondary-btn" onClick={() => handleAuth('signup')} style={{...styles.authButton, ...styles.secondaryButton}}>Create account</button>
+          </form>
+          <p className="auth-panel__note">Your training and nutrition data stays connected to this account.</p>
+        </section>
+      </main>
     );
   }
 
@@ -1965,58 +2028,72 @@ export default function App() {
   const shouldShowBottomNav = isBottomNavVisible && !isAnyModalOpen;
 
   return (
-    <div className="app-shell" style={styles.appContainer}>
-      {/* GLOBAL HEADER */}
+    <div className="app-shell app-shell--authenticated" style={styles.appContainer}>
       {!isWorkoutActive && (
-        <header className="app-header" style={styles.globalHeader}>
-          <h1 style={styles.brandTitle}>
-            Elite Tracker
-            <span style={styles.brandMarker}></span>
-          </h1>
-          <div style={styles.headerProfileChip} aria-label="Signed in profile">
-            <FitnessIcon name="notifications" size={20} />
-            <span style={styles.headerProfileInitial}>{profileInitial}</span>
-          </div>
-        </header>
+        <AppHeader profileInitial={profileInitial} onOpenProfile={() => handleTabSelect('you')} />
       )}
 
-      <div
+      <main
         ref={contentScrollRef}
         className="content-scroll"
         style={styles.contentScroll}
         onScroll={handleContentScroll}
       >
-        {isTabTransitioning && (
-          <div className="tab-scene tab-skeleton" style={styles.tabSkeleton} aria-hidden="true">
-            <div className="tab-skeleton__line" style={styles.tabSkeletonTitle}></div>
-            <div className="tab-skeleton__line" style={styles.tabSkeletonBlock}></div>
-            <div className="tab-skeleton__line" style={styles.tabSkeletonBlock}></div>
-          </div>
-        )}
-        
         {/* WORKOUT TAB */}
         {visibleTab === 'workout' && (
-          <div className="tab-scene">
+          <div className="tab-scene screen screen--workout">
             {!isWorkoutActive ? (
-              <div style={styles.workoutHome}>
-                <div className="workout-hero premium-card" style={styles.startPanel}>
-                  <p style={styles.eyebrow}>Workout</p>
-                  <h2 style={{fontSize: '28px', margin: '0 0 10px 0', color: THEME.textPrimary}}>Ready to train?</h2>
-                  <p style={{color: THEME.textSecondary, margin: '0 0 26px 0', maxWidth: '320px'}}>Track the session cleanly, keep the numbers honest.</p>
-                  <button className="mu-button mu-main-btn" onClick={startWorkout} style={styles.mainBtn}>Start an Empty Workout</button>
-                </div>
+              <WorkoutMotion scrollContainer={contentScrollRef}>
+                <div className="workout-home" style={styles.workoutHome}>
+                  <div className="workout-bento">
+                    <section className="workout-hero premium-card" style={styles.startPanel} aria-labelledby="workout-title">
+                      <div className="workout-hero__content">
+                        <p className="workout-hero__kicker">Today’s training</p>
+                        <h1 id="workout-title">
+                          Train with
+                          <span className="workout-hero__inline-art" aria-hidden="true">
+                            <img src={heroArtwork} alt="" data-workout-artwork />
+                          </span>
+                          intent.
+                        </h1>
+                        <RevealSentence>Log the work that matters, then let the trend tell the story.</RevealSentence>
+                        <button className="mu-button mu-main-btn hero-primary-action" onClick={startWorkout} style={styles.mainBtn}>
+                          <FitnessIcon name="play" size={18} /> Start empty workout
+                        </button>
+                      </div>
+                      <div className="workout-marquee" aria-hidden="true">
+                        <div>LOAD · REPS · CONTROL · RANGE · RECOVERY · LOAD · REPS · CONTROL ·</div>
+                      </div>
+                    </section>
 
-                <section style={styles.templateSection}>
+                    <button type="button" className="workout-utility-card workout-utility-card--create" onClick={openCreateTemplateModal}>
+                      <span className="workout-utility-card__icon"><FitnessIcon name="templates" size={24} /></span>
+                      <span>
+                        <small>Build once</small>
+                        <strong>Create a template</strong>
+                      </span>
+                      <FitnessIcon name="arrowRight" size={20} />
+                    </button>
+
+                    <button type="button" className="workout-utility-card workout-utility-card--import" onClick={openImportTemplateModal}>
+                      <span className="workout-utility-card__icon"><FitnessIcon name="importImage" size={24} /></span>
+                      <span>
+                        <small>Already have a plan?</small>
+                        <strong>Import from image</strong>
+                      </span>
+                      <FitnessIcon name="arrowRight" size={20} />
+                    </button>
+                  </div>
+
+                <section className="template-section" style={styles.templateSection} aria-labelledby="templates-title">
 	                  <div style={styles.templateSectionHeader}>
-	                    <h2 style={styles.templateSectionTitle}>Templates</h2>
-	                    <div style={styles.templateHeaderActions}>
-	                      <button className="mu-button mu-secondary-btn" onClick={openCreateTemplateModal} style={styles.createTemplateBtn}>
-	                        + Create Template
-	                      </button>
-	                      <button className="mu-button mu-secondary-btn" onClick={openImportTemplateModal} style={styles.importTemplateBtn}>
-	                        Import from Image
-	                      </button>
+	                    <div>
+	                      <p className="section-kicker">Repeatable sessions</p>
+	                      <h2 id="templates-title" style={styles.templateSectionTitle}>Your templates</h2>
 	                    </div>
+	                    <button className="mu-button mu-secondary-btn compact-icon-action" onClick={openCreateTemplateModal} style={styles.createTemplateBtn}>
+	                      <FitnessIcon name="plus" size={17} /> New template
+	                    </button>
 	                  </div>
 
                   {templatesError && (
@@ -2024,13 +2101,17 @@ export default function App() {
                   )}
 
                   {workoutTemplates.length === 0 ? (
-                    <div style={styles.templateEmptyState}>
-                      <p style={{margin: 0, color: THEME.textSecondary}}>No templates yet. Create your first workout template.</p>
-                    </div>
+                    <EmptyState
+                      icon="templates"
+                      title="No templates yet"
+                      action={<button type="button" className="mu-button mu-secondary-btn" onClick={openCreateTemplateModal}>Create your first template</button>}
+                    >
+                      Save a repeatable session so your next workout starts in one tap.
+                    </EmptyState>
                   ) : (
-                    <div style={styles.templateCardList}>
+                    <div className="template-accordion" style={styles.templateCardList}>
                       {workoutTemplates.map(template => (
-                        <div className="template-card" key={template.id} style={styles.templateCard}>
+                        <article className="template-card" key={template.id} style={styles.templateCard}>
                           <div style={styles.templateCardHeader}>
                             <div style={{minWidth: 0}}>
                               <h3 style={styles.templateCardTitle}>{template.name}</h3>
@@ -2041,18 +2122,19 @@ export default function App() {
                             <p style={styles.templateNotes}>{template.notes}</p>
                           )}
                           <div style={styles.templateCardActions}>
-                            <button className="mu-button mu-main-btn" onClick={() => startWorkoutFromTemplate(template)} style={styles.templateStartBtn}>Start</button>
-                            <button className="mu-button mu-secondary-btn" onClick={() => openEditTemplateModal(template)} style={styles.templateActionBtn}>Edit</button>
-                            <button className="mu-button mu-danger-btn" onClick={() => deleteWorkoutTemplate(template)} style={styles.templateDeleteBtn}>Delete</button>
+                            <button className="mu-button mu-main-btn" onClick={() => startWorkoutFromTemplate(template, Date.now())} style={styles.templateStartBtn}><FitnessIcon name="play" size={15} /> Start</button>
+                            <button className="mu-button mu-secondary-btn" onClick={() => openEditTemplateModal(template)} style={styles.templateActionBtn}><FitnessIcon name="edit" size={15} /> Edit</button>
+                            <button className="mu-button mu-danger-btn" onClick={() => deleteWorkoutTemplate(template)} style={styles.templateDeleteBtn}><FitnessIcon name="delete" size={15} /> Delete</button>
                           </div>
-                        </div>
+                        </article>
                       ))}
                     </div>
                   )}
                 </section>
-              </div>
+                </div>
+              </WorkoutMotion>
             ) : (
-              <div>
+              <div className="active-workout">
                 <div style={styles.topBar}>
                   <button
                     type="button"
@@ -2061,7 +2143,7 @@ export default function App() {
                     onClick={discardWorkout}
                     style={styles.topBarDiscardButton}
                   >
-                    ▼
+                    <FitnessIcon name="chevronDown" size={22} />
                   </button>
                   <button
                     type="button"
@@ -2072,7 +2154,7 @@ export default function App() {
                     Finish
                   </button>
                 </div>
-                <TimerDisplay startedAt={workoutStartedAtRef.current} style={styles.timerText} />
+                <TimerDisplay startedAt={workoutStartedAt} style={styles.timerText} />
 
                 {Object.keys(activeWorkout).length === 0 ? (
                   <p style={{textAlign: 'center', color: THEME.textSecondary, marginTop: '40px'}}>Tap below to add your first exercise.</p>
@@ -2091,7 +2173,7 @@ export default function App() {
                 )}
                 
                 <div style={{padding: '20px', display: 'flex', flexDirection: 'column', gap: '15px'}}>
-                  <button className="mu-button mu-main-btn" onClick={() => setShowExerciseModal(true)} style={styles.mainBtn}>+ Add Exercises</button>
+                  <button className="mu-button mu-main-btn" onClick={() => setShowExerciseModal(true)} style={styles.mainBtn}><FitnessIcon name="plus" size={18} /> Add exercises</button>
                   <button className="mu-button mu-secondary-btn" onClick={discardWorkout} style={styles.discardBtn}>Discard Workout</button>
                 </div>
               </div>
@@ -2101,23 +2183,23 @@ export default function App() {
 
         {/* HISTORY TAB */}
         {visibleTab === 'history' && (
-          <div className="tab-scene" style={{padding: '20px'}}>
-            <h1 style={styles.pageTitle}>Your Progress</h1>
+          <div className="tab-scene screen screen--history" style={{padding: '20px'}}>
+            <PageHeader title="Training history" description="Review completed sessions and the work behind your progress." />
             
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-              <button className="mu-text-button" onClick={() => { setWeekOffset(w => w - 1); setSelectedDate(null); }} style={styles.navArrow}>◀ Past</button>
+            <div className="week-switcher" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+              <button className="mu-text-button" onClick={() => { setWeekOffset(w => w - 1); setSelectedDate(null); }} style={styles.navArrow}><FitnessIcon name="arrowLeft" size={17} /> Past</button>
               <span style={{ fontWeight: 'bold', fontSize: '14px', color: THEME.textSecondary, textTransform: 'uppercase', letterSpacing: '1px' }}>
                 {weekOffset === 0 ? "Current Week" : `${Math.abs(weekOffset)} Week(s) Ago`}
               </span>
-              <button className="mu-text-button" onClick={() => { setWeekOffset(w => w + 1); setSelectedDate(null); }} disabled={weekOffset === 0} style={{ ...styles.navArrow, opacity: weekOffset === 0 ? 0.2 : 1 }}>Future ▶</button>
+              <button className="mu-text-button" onClick={() => { setWeekOffset(w => w + 1); setSelectedDate(null); }} disabled={weekOffset === 0} style={{ ...styles.navArrow, opacity: weekOffset === 0 ? 0.2 : 1 }}>Future <FitnessIcon name="arrowRight" size={17} /></button>
             </div>
             
-            <div style={styles.calendarContainer}>
+            <div className="calendar-strip" style={styles.calendarContainer}>
               {currentWeekDays.map(dayInfo => {
                 const isWorkoutDay = workoutDayMatchStrings.has(dayInfo.matchString);
                 const isSelected = selectedDate === dayInfo.matchString;
                 return (
-                  <div key={dayInfo.date} onClick={() => setSelectedDate(isSelected ? null : dayInfo.matchString)} style={{
+                  <button type="button" key={dayInfo.date} aria-pressed={isSelected} onClick={() => setSelectedDate(isSelected ? null : dayInfo.matchString)} style={{
                     ...styles.calendarDay, 
                     backgroundColor: isSelected ? THEME.primaryRed : (isWorkoutDay ? THEME.goldSoft : THEME.cardBg),
                     border: dayInfo.isToday ? `1px solid ${THEME.primaryRed}` : (isWorkoutDay ? `1px solid rgba(242, 201, 76, 0.4)` : '1px solid transparent'),
@@ -2126,7 +2208,7 @@ export default function App() {
                   }}>
                     <span style={{fontSize: '10px', color: isSelected ? THEME.textPrimary : (isWorkoutDay ? THEME.accentGold : THEME.textSecondary), fontWeight: 'bold'}}>{dayInfo.dayName}</span>
                     <span style={{fontSize: '16px', color: isSelected ? THEME.textPrimary : (isWorkoutDay ? THEME.accentGold : THEME.textPrimary), fontWeight: 'bold'}}>{dayInfo.date}</span>
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -2147,9 +2229,9 @@ export default function App() {
                   <div style={styles.historyHeader}>
                     <div>
                       <p style={{margin: 0, fontWeight: 'bold', fontSize: '18px'}}>{entry.date}</p>
-                      <p style={{margin: '5px 0 0 0', color: THEME.accentGold, fontWeight: 'bold', fontSize: '14px'}}>⏱ {entry.duration}</p>
+                      <p className="history-duration" style={{margin: '5px 0 0 0', color: THEME.accentGold, fontWeight: 'bold', fontSize: '14px'}}><FitnessIcon name="timer" size={15} /> {entry.duration}</p>
                     </div>
-                    <button className="mu-button mu-danger-btn" onClick={() => deleteHistoryEntry(entry.id)} style={styles.deleteBtn}>Delete</button>
+                    <button className="mu-button mu-danger-btn" onClick={() => deleteHistoryEntry(entry.id)} style={styles.deleteBtn}><FitnessIcon name="delete" size={15} /> Delete</button>
                   </div>
                   {Object.entries(entry.data).map(([exName, exSets]) => {
                     const completedSets = exSets.filter(s => s.completed);
@@ -2175,50 +2257,54 @@ export default function App() {
 
         {/* METABOLISM & TREND TAB */}
         {visibleTab === 'tdee' && (
-          <div className="tab-scene" style={{padding: '20px', minWidth: 0}}>
-            <h2 style={styles.pageTitle}>Metabolism Engine</h2>
-            
-            <div className="panel-card" style={styles.dashboardCard}>
-              <p style={{color: THEME.textSecondary, margin: '0 0 10px 0'}}>Actual TDEE (Dynamic):</p>
-              <p style={{fontSize: '36px', fontWeight: '900', color: THEME.accentGold, margin: 0, letterSpacing: '0'}}>
-                {dynamicTDEE ? `${dynamicTDEE} kcal` : "Collecting data..."}
-              </p>
-              {!dynamicTDEE && <p style={{fontSize: '12px', color: THEME.textSecondary, marginTop: '10px'}}>A minimum of 7 days logged is required for accurate algorithm calibration.</p>}
-            </div>
-
-            {dailyLogs.length >= 2 && weightTrendData.length >= 2 && (
-              <div className="panel-card" style={styles.sectionCard}>
-                <h3 style={{margin: '0 0 15px 0', fontSize: '18px', color: THEME.textPrimary}}>Weight Trend Analysis</h3>
-                <div ref={chartFrameRef} style={styles.chartFrame}>
-                  {shouldMountWeightChart && (
-                    <ResponsiveContainer
-                      width="100%"
-                      height="100%"
-                      minWidth={1}
-                      minHeight={CHART_HEIGHT}
-                      debounce={100}
-                      initialDimension={{ width: chartSize.width, height: CHART_HEIGHT }}
-                    >
-                      <LineChart data={weightTrendData} margin={{ top: 5, right: 5, bottom: 5, left: -20 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke={THEME.border} vertical={false} />
-                        <XAxis dataKey="date" stroke={THEME.textSecondary} fontSize={12} tickLine={false} />
-                        <YAxis stroke={THEME.textSecondary} fontSize={12} tickLine={false} domain={['dataMin - 1', 'dataMax + 1']} />
-                        <Tooltip contentStyle={{backgroundColor: THEME.bgDark, border: `1px solid ${THEME.border}`, borderRadius: '8px', color: THEME.textPrimary}} itemStyle={{color: THEME.textPrimary}} />
-                        <Legend wrapperStyle={{fontSize: '12px', paddingTop: '10px', color: THEME.textSecondary}} />
-                        <Line type="monotone" dataKey="Actual" stroke={THEME.accentGold} strokeWidth={2} strokeDasharray="5 5" dot={{r: 3, fill: THEME.accentGold}} name="Scale Weight" />
-                        <Line type="monotone" dataKey="Trend" stroke={THEME.primaryRed} strokeWidth={3} dot={false} activeDot={{r: 6, fill: THEME.primaryRed}} name="True Trend (EMA)" />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  )}
-                </div>
-                <p style={{fontSize: '11px', color: THEME.textSecondary, textAlign: 'center', marginTop: '10px'}}>The red line represents your true weight trend, filtering out water retention and noise.</p>
+          <div className="tab-scene screen screen--tdee" style={{padding: '20px', minWidth: 0}}>
+            <PageHeader title="Metabolism" description="Use daily weight and intake data to estimate your real energy needs." />
+            <div className={`tdee-overview${dailyLogs.length >= 2 && weightTrendData.length >= 2 ? ' tdee-overview--with-chart' : ''}`}>
+              <div className="panel-card tdee-summary-card" style={styles.dashboardCard}>
+                <p style={{color: THEME.textSecondary, margin: '0 0 10px 0'}}>Actual TDEE (Dynamic):</p>
+                <p style={{fontSize: '36px', fontWeight: '900', color: THEME.accentGold, margin: 0, letterSpacing: '0'}}>
+                  {dynamicTDEE ? `${dynamicTDEE} kcal` : "Collecting data..."}
+                </p>
+                {!dynamicTDEE && <p style={{fontSize: '12px', color: THEME.textSecondary, marginTop: '10px'}}>A minimum of 7 days logged is required for accurate algorithm calibration.</p>}
               </div>
-            )}
+
+              {dailyLogs.length >= 2 && weightTrendData.length >= 2 && (
+                <div className="panel-card tdee-chart-card" style={styles.sectionCard}>
+                  <h3 style={{margin: '0 0 15px 0', fontSize: '18px', color: THEME.textPrimary}}>Weight Trend Analysis</h3>
+                  <div ref={chartFrameRef} style={styles.chartFrame}>
+                    {shouldMountWeightChart && (
+                      <ResponsiveContainer
+                        width="100%"
+                        height="100%"
+                        minWidth={1}
+                        minHeight={CHART_HEIGHT}
+                        debounce={100}
+                        initialDimension={{ width: chartSize.width, height: CHART_HEIGHT }}
+                      >
+                        <LineChart data={weightTrendData} margin={{ top: 5, right: 5, bottom: 5, left: -20 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke={THEME.border} vertical={false} />
+                          <XAxis dataKey="date" stroke={THEME.textSecondary} fontSize={12} tickLine={false} />
+                          <YAxis stroke={THEME.textSecondary} fontSize={12} tickLine={false} domain={['dataMin - 1', 'dataMax + 1']} />
+                          <Tooltip contentStyle={{backgroundColor: THEME.bgDark, border: `1px solid ${THEME.border}`, borderRadius: '8px', color: THEME.textPrimary}} itemStyle={{color: THEME.textPrimary}} />
+                          <Legend wrapperStyle={{fontSize: '12px', paddingTop: '10px', color: THEME.textSecondary}} />
+                          <Line type="monotone" dataKey="Actual" stroke={THEME.accentGold} strokeWidth={2} strokeDasharray="5 5" dot={{r: 3, fill: THEME.accentGold}} name="Scale Weight" />
+                          <Line type="monotone" dataKey="Trend" stroke={THEME.primaryRed} strokeWidth={3} dot={false} activeDot={{r: 6, fill: THEME.primaryRed}} name="True Trend (EMA)" />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
+                  </div>
+                  <p style={{fontSize: '11px', color: THEME.textSecondary, textAlign: 'center', marginTop: '10px'}}>The red line represents your true weight trend, filtering out water retention and noise.</p>
+                </div>
+              )}
+            </div>
 
             <h3 style={{fontSize: '18px', marginBottom: '15px', textAlign: 'left', color: THEME.textPrimary}}>Daily Check-in</h3>
             <div style={{display: 'flex', gap: '10px', marginBottom: '20px'}}>
+              <label className="sr-only" htmlFor="daily-body-weight">Today&apos;s body weight in kilograms</label>
               <input 
+                id="daily-body-weight"
                 type="number" 
+                inputMode="decimal"
                 placeholder="Today's Body Weight (kg)" 
                 value={dailyWeight} 
                 onChange={(e) => setDailyWeight(e.target.value)} 
@@ -2243,7 +2329,7 @@ export default function App() {
                         </p>
                         <p style={{margin: '5px 0 0 0', color: THEME.textSecondary, fontSize: '14px'}}>Body Weight: {log.weight || 'Not logged'} {log.weight ? 'kg' : ''}</p>
                       </div>
-                      <button className="mu-button mu-danger-btn" onClick={() => deleteDailyLog(log.id)} style={styles.deleteBtn}>Delete</button>
+                      <button className="mu-button mu-danger-btn" onClick={() => deleteDailyLog(log.id)} style={styles.deleteBtn}><FitnessIcon name="delete" size={15} /> Delete</button>
                     </div>
                   </div>
                   {log.foods && log.foods.length > 0 && (
@@ -2268,8 +2354,8 @@ export default function App() {
 
         {/* AI NUTRITION TAB */}
         {visibleTab === 'food' && (
-          <div className="tab-scene" style={{padding: '20px'}}>
-            <h2 style={styles.pageTitle}>AI Nutrition</h2>
+          <div className="tab-scene screen screen--nutrition" style={{padding: '20px'}}>
+            <PageHeader title="Nutrition" description="Capture a meal, review the estimate, and save only what looks right." />
 
             <div className="panel-card" style={styles.aiMealCard}>
               <div>
@@ -2345,6 +2431,7 @@ export default function App() {
               {aiMealInputMode === 'description' && (
                 <div style={styles.aiMealInputPanel}>
                   <textarea
+                    aria-label="Describe your meal"
                     value={mealDescriptionInput}
                     onChange={(event) => setMealDescriptionInput(event.target.value)}
                     placeholder="Example: 1 bowl of rice, 150g chicken breast, 1 fried egg, vegetables"
@@ -2530,31 +2617,31 @@ export default function App() {
 
         {/* PROFILE / COACHING TAB */}
         {visibleTab === 'you' && (
-          <div className="tab-scene" style={{padding: '20px', textAlign: 'center'}}>
-            <h2 style={styles.pageTitle}>AI Coaching Setup</h2>
+          <div className="tab-scene screen screen--profile" style={{padding: '20px', textAlign: 'center'}}>
+            <PageHeader title="Coaching profile" description="Set the basics once, then adjust your targets as your body and goals change." />
             <div className="panel-card" style={{...styles.sectionCard, textAlign: 'left'}}>
               
               <div style={{display: 'flex', gap: '10px', marginBottom: '10px'}}>
                 <div style={{flex: 1}}>
-                  <label style={styles.inputLabel}>Age</label>
-                  <input type="number" value={profileAge} onChange={(e) => setProfileAge(e.target.value)} style={{...styles.authInput, padding: '10px'}} />
+                  <label htmlFor="profile-age" style={styles.inputLabel}>Age</label>
+                  <input id="profile-age" type="number" inputMode="numeric" value={profileAge} onChange={(e) => setProfileAge(e.target.value)} style={{...styles.authInput, padding: '10px'}} />
                 </div>
                 <div style={{flex: 1}}>
-                  <label style={styles.inputLabel}>Height (cm)</label>
-                  <input type="number" value={profileHeight} onChange={(e) => setProfileHeight(e.target.value)} style={{...styles.authInput, padding: '10px'}} />
+                  <label htmlFor="profile-height" style={styles.inputLabel}>Height (cm)</label>
+                  <input id="profile-height" type="number" inputMode="decimal" value={profileHeight} onChange={(e) => setProfileHeight(e.target.value)} style={{...styles.authInput, padding: '10px'}} />
                 </div>
                 <div style={{flex: 1}}>
-                  <label style={styles.inputLabel}>Weight (kg)</label>
-                  <input type="number" value={profileWeight} onChange={(e) => setProfileWeight(e.target.value)} style={{...styles.authInput, padding: '10px'}} />
+                  <label htmlFor="profile-weight" style={styles.inputLabel}>Weight (kg)</label>
+                  <input id="profile-weight" type="number" inputMode="decimal" value={profileWeight} onChange={(e) => setProfileWeight(e.target.value)} style={{...styles.authInput, padding: '10px'}} />
                 </div>
               </div>
 
               <div style={{display: 'flex', gap: '10px', marginBottom: '10px'}}>
-                <select value={profileGender} onChange={(e) => setProfileGender(e.target.value)} style={{...styles.authInput, appearance: 'none', padding: '10px', flex: 1}}>
+                <select aria-label="Gender" value={profileGender} onChange={(e) => setProfileGender(e.target.value)} style={{...styles.authInput, appearance: 'none', padding: '10px', flex: 1}}>
                   <option value="male">Male</option>
                   <option value="female">Female</option>
                 </select>
-                <select value={profileActivity} onChange={(e) => setProfileActivity(e.target.value)} style={{...styles.authInput, appearance: 'none', padding: '10px', flex: 1}}>
+                <select aria-label="Activity level" value={profileActivity} onChange={(e) => setProfileActivity(e.target.value)} style={{...styles.authInput, appearance: 'none', padding: '10px', flex: 1}}>
                   <option value={1.2}>Sedentary</option>
                   <option value={1.375}>Light Active</option>
                   <option value={1.55}>Moderately Active</option>
@@ -2562,7 +2649,7 @@ export default function App() {
                 </select>
               </div>
 
-              <select value={profileGoal} onChange={(e) => setProfileGoal(e.target.value)} style={{...styles.authInput, appearance: 'none', padding: '10px', marginBottom: '15px'}}>
+              <select aria-label="Coaching goal" value={profileGoal} onChange={(e) => setProfileGoal(e.target.value)} style={{...styles.authInput, appearance: 'none', padding: '10px', marginBottom: '15px'}}>
                 <option value="cut">Fat Loss (-500 kcal)</option>
                 <option value="maintain">Maintenance</option>
                 <option value="bulk">Muscle Gain (+300 kcal)</option>
@@ -2599,51 +2686,23 @@ export default function App() {
             <button className="mu-button mu-danger-btn" onClick={handleSignOut} style={{...styles.authButton, backgroundColor: THEME.dangerRed, borderColor: THEME.dangerRed}}>Sign Out</button>
           </div>
         )}
-      </div> 
+      </main>
 
       {!isWorkoutActive && (
-        <nav
-          className="bottom-nav"
-          aria-label="Primary navigation"
-          style={{
-            transform: shouldShowBottomNav
-              ? 'translateX(-50%) translateY(0)'
-              : 'translateX(-50%) translateY(calc(100% + 24px))',
-            opacity: shouldShowBottomNav ? 1 : 0,
-            pointerEvents: shouldShowBottomNav ? 'auto' : 'none',
-          }}
-        >
-          {MAIN_NAV_ITEMS.map(item => {
-            const isActive = activeTab === item.id;
-
-            return (
-              <button
-                key={item.id}
-                type="button"
-                className={[
-                  'bottom-nav__item',
-                  item.isPrimary ? 'bottom-nav__item--primary' : '',
-                  isActive ? 'bottom-nav__item--active' : '',
-                ].filter(Boolean).join(' ')}
-                onClick={() => handleTabSelect(item.id)}
-                aria-current={isActive ? 'page' : undefined}
-              >
-                <span className="bottom-nav__icon">
-                  <FitnessIcon name={item.icon} size={item.isPrimary ? 27 : 24} />
-                </span>
-                <span className="bottom-nav__label">{item.label}</span>
-              </button>
-            );
-          })}
-        </nav>
+        <PrimaryNavigation
+          items={MAIN_NAV_ITEMS}
+          activeTab={activeTab}
+          visible={shouldShowBottomNav}
+          onSelect={handleTabSelect}
+        />
       )}
 
       {/* EXERCISE MODAL */}
       {showExerciseModal && (
-        <div className="modal-surface" style={styles.modalOverlay}>
-          <div style={styles.modalHeader}>
-            <span className="mu-icon-button" onClick={() => { setShowExerciseModal(false); setShowCreateExerciseModal(false); setSelectedExerciseHistoryName(''); }} style={styles.modalClose}>✕</span>
-            <h2 style={{margin: 0, fontSize: '18px'}}>Add Exercises</h2>
+        <div className="modal-surface modal-shell" style={styles.modalOverlay} role="dialog" aria-modal="true" aria-labelledby="exercise-modal-title">
+          <div className="modal-header" style={styles.modalHeader}>
+            <button type="button" className="mu-icon-button modal-close-button" aria-label="Close exercise picker" onClick={() => { setShowExerciseModal(false); setShowCreateExerciseModal(false); setSelectedExerciseHistoryName(''); }} style={styles.modalClose}><FitnessIcon name="close" size={22} /></button>
+            <h2 id="exercise-modal-title" style={{margin: 0, fontSize: '18px'}}>Add exercises</h2>
             <span style={{width: '24px'}}></span>
           </div>
 
@@ -2666,16 +2725,17 @@ export default function App() {
 
       {/* CREATE EXERCISE MODAL */}
       {showCreateExerciseModal && (
-        <div className="modal-surface" style={{...styles.modalOverlay, zIndex: 340}}>
-          <div style={styles.modalHeader}>
+        <div className="modal-surface modal-shell" style={{...styles.modalOverlay, zIndex: 340}} role="dialog" aria-modal="true" aria-labelledby="create-exercise-title">
+          <div className="modal-header" style={styles.modalHeader}>
             <span style={{width: '24px'}}></span>
-            <h2 style={{margin: 0, fontSize: '18px'}}>Create Exercise</h2>
+            <h2 id="create-exercise-title" style={{margin: 0, fontSize: '18px'}}>Create exercise</h2>
             <span style={{width: '24px'}}></span>
           </div>
 
           <div style={styles.createExerciseModalBody}>
-            <label style={styles.formLabel}>Exercise name:</label>
+            <label htmlFor="new-exercise-name" style={styles.formLabel}>Exercise name</label>
             <input
+              id="new-exercise-name"
               type="text"
               placeholder="Smith Machine Incline Press"
               value={newExerciseName}
@@ -2686,8 +2746,9 @@ export default function App() {
               style={styles.authInput}
             />
 
-            <label style={styles.formLabel}>Muscle group:</label>
+            <label htmlFor="new-exercise-muscle" style={styles.formLabel}>Muscle group</label>
             <select
+              id="new-exercise-muscle"
               value={newExerciseMuscleGroup}
               onChange={(e) => {
                 setNewExerciseMuscleGroup(e.target.value);
@@ -2701,8 +2762,9 @@ export default function App() {
               ))}
             </select>
 
-            <label style={styles.formLabel}>Notes:</label>
+            <label htmlFor="new-exercise-notes" style={styles.formLabel}>Notes</label>
             <textarea
+              id="new-exercise-notes"
               placeholder="Optional notes..."
               value={newExerciseNotes}
               onChange={(e) => setNewExerciseNotes(e.target.value)}
@@ -2736,16 +2798,17 @@ export default function App() {
 
       {/* CREATE / EDIT TEMPLATE MODAL */}
 	      {showTemplateModal && (
-	        <div className="modal-surface" style={{...styles.modalOverlay, zIndex: 340}}>
-          <div style={styles.modalHeader}>
-            <span className="mu-icon-button" onClick={closeTemplateModal} style={styles.modalClose}>✕</span>
-            <h2 style={{margin: 0, fontSize: '18px'}}>{editingTemplateId ? 'Edit Template' : 'Create Template'}</h2>
+	        <div className="modal-surface modal-shell" style={{...styles.modalOverlay, zIndex: 340}} role="dialog" aria-modal="true" aria-labelledby="template-modal-title">
+          <div className="modal-header" style={styles.modalHeader}>
+            <button type="button" className="mu-icon-button modal-close-button" aria-label="Close template editor" onClick={closeTemplateModal} style={styles.modalClose}><FitnessIcon name="close" size={22} /></button>
+            <h2 id="template-modal-title" style={{margin: 0, fontSize: '18px'}}>{editingTemplateId ? 'Edit template' : 'Create template'}</h2>
             <span style={{width: '24px'}}></span>
           </div>
 
           <div style={styles.templateModalBody}>
-            <label style={styles.formLabel}>Template name</label>
+            <label htmlFor="template-name" style={styles.formLabel}>Template name</label>
             <input
+              id="template-name"
               type="text"
               placeholder="Push Day"
               value={templateName}
@@ -2756,8 +2819,9 @@ export default function App() {
               style={styles.authInput}
             />
 
-            <label style={styles.formLabel}>Notes</label>
+            <label htmlFor="template-notes" style={styles.formLabel}>Notes</label>
             <textarea
+              id="template-notes"
               placeholder="Optional notes..."
               value={templateNotes}
               onChange={(e) => setTemplateNotes(e.target.value)}
@@ -2873,10 +2937,10 @@ export default function App() {
 
 	      {/* IMPORT TEMPLATE FROM IMAGE MODAL */}
 	      {showImportTemplateModal && (
-	        <div className="modal-surface" style={{...styles.modalOverlay, zIndex: 340}}>
-	          <div style={styles.modalHeader}>
-	            <span className="mu-icon-button" onClick={closeImportTemplateModal} style={styles.modalClose}>✕</span>
-	            <h2 style={{margin: 0, fontSize: '18px'}}>Import Template From Image</h2>
+	        <div className="modal-surface modal-shell" style={{...styles.modalOverlay, zIndex: 340}} role="dialog" aria-modal="true" aria-labelledby="import-template-title">
+	          <div className="modal-header" style={styles.modalHeader}>
+	            <button type="button" className="mu-icon-button modal-close-button" aria-label="Close template import" onClick={closeImportTemplateModal} style={styles.modalClose}><FitnessIcon name="close" size={22} /></button>
+	            <h2 id="import-template-title" style={{margin: 0, fontSize: '18px'}}>Import template</h2>
 	            <span style={{width: '24px'}}></span>
 	          </div>
 
@@ -3083,10 +3147,10 @@ export default function App() {
 	      {/* EXERCISE HISTORY MODAL */}
       {selectedExerciseHistoryName && (
         <div style={styles.exerciseHistoryOverlay}>
-          <div className="modal-surface" style={styles.exerciseHistoryModal}>
-            <div style={styles.modalHeader}>
-              <span className="mu-icon-button" onClick={() => setSelectedExerciseHistoryName('')} style={styles.modalClose}>✕</span>
-              <h2 style={{margin: 0, fontSize: '18px'}}>Exercise History: {selectedExerciseHistoryName}</h2>
+          <div className="modal-surface modal-shell" style={styles.exerciseHistoryModal} role="dialog" aria-modal="true" aria-labelledby="exercise-history-title">
+            <div className="modal-header" style={styles.modalHeader}>
+              <button type="button" className="mu-icon-button modal-close-button" aria-label="Close exercise history" onClick={() => setSelectedExerciseHistoryName('')} style={styles.modalClose}><FitnessIcon name="close" size={22} /></button>
+              <h2 id="exercise-history-title" style={{margin: 0, fontSize: '18px'}}>Exercise history: {selectedExerciseHistoryName}</h2>
               <span style={{width: '24px'}}></span>
             </div>
 
