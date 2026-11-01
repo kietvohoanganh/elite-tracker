@@ -1,4 +1,4 @@
-import { memo, useCallback, useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { lazy, Suspense, memo, useCallback, useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { initializeApp } from "firebase/app";
 import {
   browserLocalPersistence,
@@ -13,7 +13,9 @@ import {
 import { getFirestore, collection, query, orderBy, limit, onSnapshot, getDocs, addDoc, deleteDoc, doc, setDoc, getDoc } from "firebase/firestore";
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { Capacitor } from '@capacitor/core';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { usePageActive, pageActivity } from './hooks/usePageActive';
+import { startForegroundInterval } from './utils/pageActivity';
+
 import ExercisePicker from './components/ExercisePicker';
 import FitnessIcon from './components/FitnessIcon';
 import { AppHeader, BrandLockup, EmptyState, PageHeader, PrimaryNavigation } from './components/AppShell';
@@ -25,16 +27,17 @@ import {
   normalizeTemplateExercise,
   validateTemplate,
 } from './utils/templates';
-import { getBestSetForExercise, getExerciseHistory } from './utils/exercises';
+import { getBestSetForExercise, getExerciseHistory, getPreviousSetSummaries } from './utils/exercises';
 import {
   detectNewExercises,
   findExerciseLibraryMatch,
   mapParsedExerciseToTemplateExercise,
   normalizeExerciseName,
 } from './utils/exerciseParsing';
-import { analyzeMealDescription, analyzeMealImage } from './services/mealAnalyzer';
 import { parseWorkoutTemplateImage } from './services/templateImageParser';
 import { readWorkoutDraft, saveWorkoutDraft } from './utils/workoutDraft';
+
+const WeightTrendChart = lazy(() => import('./components/WeightTrendChart'));
 
 // 1. YOUR FIREBASE CONFIGURATION
 const firebaseConfig = {
@@ -205,19 +208,10 @@ const TimerDisplay = memo(function TimerDisplay({ startedAt, style }) {
   const [elapsedSeconds, setElapsedSeconds] = useState(() => getElapsedSeconds(startedAt));
 
   useEffect(() => {
-    const syncTimer = window.setTimeout(() => {
+    if (!startedAt) return undefined;
+    return startForegroundInterval(pageActivity, () => {
       setElapsedSeconds(getElapsedSeconds(startedAt));
-    }, 0);
-    if (!startedAt) return () => window.clearTimeout(syncTimer);
-
-    const intervalId = window.setInterval(() => {
-      setElapsedSeconds(getElapsedSeconds(startedAt));
-    }, 1000);
-
-    return () => {
-      window.clearTimeout(syncTimer);
-      window.clearInterval(intervalId);
-    };
+    }, window);
   }, [startedAt]);
 
   return <p className="workout-timer" style={style}>{formatTime(elapsedSeconds)}</p>;
@@ -295,6 +289,7 @@ const WorkoutExerciseBlock = memo(function WorkoutExerciseBlock({
 });
 
 export default function App() {
+  const isPageActive = usePageActive();
   // --- STATE MANAGEMENT ---
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -344,6 +339,13 @@ export default function App() {
   const [importRawText, setImportRawText] = useState('');
   const [importExerciseSearch, setImportExerciseSearch] = useState('');
   const importParseRequestIdRef = useRef(0);
+  const importParseAbortRef = useRef(null);
+  useEffect(() => {
+    const unsubscribe = pageActivity.subscribe(() => {
+      if (!pageActivity.getSnapshot()) importParseAbortRef.current?.abort();
+    });
+    return () => { unsubscribe(); importParseAbortRef.current?.abort(); };
+  }, []);
   const isSavingCustomExerciseRef = useRef(false);
   const isSavingTemplateRef = useRef(false);
   const templateDragIndexRef = useRef(null);
@@ -382,9 +384,6 @@ export default function App() {
   const [dailyWeight, setDailyWeight] = useState('');
   const [dailyLogs, setDailyLogs] = useState([]);
   const [dynamicTDEE, setDynamicTDEE] = useState(null);
-  const [chartReady, setChartReady] = useState(false);
-  const [chartSize, setChartSize] = useState({ width: 0, height: CHART_HEIGHT });
-  const chartFrameRef = useRef(null);
 
   const calculateDynamicTDEE = (logs, windowSize = 14) => {
     const windowLogs = logs.slice(0, windowSize);
@@ -443,6 +442,8 @@ export default function App() {
   );
   const visibleTab = activeTab;
   const isTdeeTabVisible = visibleTab === 'tdee';
+  const shouldLoadDailyLogs = Boolean(user && isPageActive && ['tdee', 'food', 'you'].includes(activeTab));
+  const shouldLoadHistory = Boolean(user && isPageActive && (activeTab === 'history' || (activeTab === 'workout' && (isWorkoutActive || selectedExerciseHistoryName))));
 
   useEffect(() => {
     if (!isAnyModalOpen) return undefined;
@@ -565,23 +566,10 @@ export default function App() {
     };
   }, [shouldLoadExerciseLibrary, user]);
 
-  const prevData = useMemo(() => {
-    if (!isWorkoutActive || workoutHistory.length === 0) return {};
-
-    const activeExercises = Object.keys(activeWorkout);
-    const newPrevData = {};
-
-    activeExercises.forEach(exName => {
-      const lastWorkoutWithEx = workoutHistory.find(h => h.data && h.data[exName]);
-      if (lastWorkoutWithEx) {
-        const lastSets = lastWorkoutWithEx.data[exName];
-        const bestSet = lastSets.reduce((prev, current) => (parseFloat(prev.weight) > parseFloat(current.weight)) ? prev : current);
-        newPrevData[exName] = `${bestSet.weight}kg x ${bestSet.reps}`;
-      }
-    });
-
-    return newPrevData;
-  }, [activeWorkout, isWorkoutActive, workoutHistory]); 
+  // Set edits do not change previous-session data; compute it only when history changes.
+  const prevData = useMemo(() => (
+    isWorkoutActive ? getPreviousSetSummaries(workoutHistory) : {}
+  ), [isWorkoutActive, workoutHistory]);
 
   const allExerciseLibrary = useMemo(() => {
     const library = [];
@@ -725,7 +713,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const shouldLoadDailyLogs = user && ['tdee', 'food', 'you'].includes(activeTab);
     if (!shouldLoadDailyLogs) return undefined;
 
     const logsQuery = query(collection(db, "users", user.uid, "daily_logs"), orderBy("timestamp", "desc"));
@@ -746,10 +733,9 @@ export default function App() {
     );
 
     return () => unsubscribe();
-  }, [activeTab, user]);
+  }, [shouldLoadDailyLogs, user]);
 
   useEffect(() => {
-    const shouldLoadHistory = user && (activeTab === 'history' || isWorkoutActive);
     if (!shouldLoadHistory) return undefined;
 
     const historyQuery = query(collection(db, "users", user.uid, "history"), orderBy("timestamp", "desc"), limit(50));
@@ -765,7 +751,7 @@ export default function App() {
     );
 
     return () => unsubscribe();
-  }, [activeTab, isWorkoutActive, user]);
+  }, [shouldLoadHistory, user]);
 
   const handleContentScroll = useCallback((event) => {
     const nextScrollTop = event.currentTarget.scrollTop;
@@ -875,62 +861,6 @@ export default function App() {
       };
     });
   }, [dailyLogs, isTdeeTabVisible]);
-
-  useEffect(() => {
-    if (!isTdeeTabVisible || dailyLogs.length < 2 || weightTrendData.length < 2) {
-      const resetTimer = window.setTimeout(() => {
-        setChartReady(false);
-        setChartSize({ width: 0, height: CHART_HEIGHT });
-      }, 0);
-      return () => window.clearTimeout(resetTimer);
-    }
-
-    let resizeObserver = null;
-    const syncChartSize = () => {
-      const chartFrame = chartFrameRef.current;
-      if (!chartFrame) {
-        setChartReady(false);
-        return;
-      }
-
-      const rect = chartFrame.getBoundingClientRect();
-      const width = Math.floor(rect.width);
-      const height = Math.floor(rect.height || CHART_HEIGHT);
-      const hasValidSize = width > 0 && height > 0;
-
-      setChartSize(prev => (
-        prev.width === width && prev.height === height
-          ? prev
-          : { width: hasValidSize ? width : 0, height: hasValidSize ? height : CHART_HEIGHT }
-      ));
-      setChartReady(hasValidSize);
-    };
-
-    const syncTimer = window.setTimeout(() => {
-      setChartReady(false);
-      setChartSize({ width: 0, height: CHART_HEIGHT });
-      syncChartSize();
-
-      if (typeof ResizeObserver !== 'undefined' && chartFrameRef.current) {
-        resizeObserver = new ResizeObserver(syncChartSize);
-        resizeObserver.observe(chartFrameRef.current);
-      }
-    }, 0);
-
-    return () => {
-      window.clearTimeout(syncTimer);
-      if (resizeObserver) resizeObserver.disconnect();
-    };
-  }, [dailyLogs.length, isTdeeTabVisible, weightTrendData.length]);
-
-  const shouldMountWeightChart = Boolean(
-    isTdeeTabVisible &&
-    chartReady &&
-    dailyLogs.length >= 2 &&
-    weightTrendData.length >= 2 &&
-    chartSize.width > 0 &&
-    chartSize.height > 0
-  );
 
   const deleteDailyLog = async (logId) => {
     try {
@@ -1144,6 +1074,7 @@ export default function App() {
     setAiMealError('');
 
     try {
+      const { analyzeMealImage } = await import('./services/mealAnalyzer');
       const analysis = await analyzeMealImage(mealPhotoBase64, mealPhotoMimeType);
       applyAiMealAnalysis(analysis);
     } catch (error) {
@@ -1163,6 +1094,7 @@ export default function App() {
     setAiMealError('');
 
     try {
+      const { analyzeMealDescription } = await import('./services/mealAnalyzer');
       const analysis = await analyzeMealDescription(mealDescriptionInput);
       applyAiMealAnalysis(analysis);
     } catch (error) {
@@ -1423,6 +1355,7 @@ export default function App() {
   };
 
   const resetImportTemplateForm = () => {
+    importParseAbortRef.current?.abort();
     importParseRequestIdRef.current += 1;
     setImportImagePreview('');
     setImportImageBase64('');
@@ -1492,6 +1425,7 @@ export default function App() {
     if (!file) return;
     event.target.value = '';
 
+    importParseAbortRef.current?.abort();
     const requestId = importParseRequestIdRef.current + 1;
     importParseRequestIdRef.current = requestId;
     setImportImagePreview('');
@@ -1542,9 +1476,12 @@ export default function App() {
       return;
     }
 
+    importParseAbortRef.current?.abort();
     const requestId = importParseRequestIdRef.current + 1;
     importParseRequestIdRef.current = requestId;
     const imageBase64ToParse = importImageBase64;
+    const controller = new AbortController();
+    importParseAbortRef.current = controller;
 
     setIsParsingTemplateImage(true);
     setImportTemplateError('');
@@ -1555,7 +1492,7 @@ export default function App() {
 
     try {
       const mimeTypeToParse = importImageMimeType;
-      const parsedTemplate = await parseWorkoutTemplateImage(imageBase64ToParse, mimeTypeToParse);
+      const parsedTemplate = await parseWorkoutTemplateImage(imageBase64ToParse, mimeTypeToParse, { signal: controller.signal });
       if (importParseRequestIdRef.current !== requestId) return;
 
       const parsedExercises = Array.isArray(parsedTemplate.exercises) ? parsedTemplate.exercises : [];
@@ -1572,9 +1509,10 @@ export default function App() {
 
       setHasParsedImport(false);
       setImportedTemplateExercises([]);
-      setImportTemplateError(error.message || 'Could not detect a workout plan from this image. Try a clearer image or enter the template manually.');
+      setImportTemplateError(error.name === 'AbortError' ? 'Image reading stopped when the app went into the background. Tap Parse Image to try again.' : error.message || 'Could not detect a workout plan from this image. Try a clearer image or enter the template manually.');
     } finally {
       if (importParseRequestIdRef.current === requestId) {
+        importParseAbortRef.current = null;
         setIsParsingTemplateImage(false);
       }
     }
@@ -2107,7 +2045,7 @@ export default function App() {
         {visibleTab === 'workout' && (
           <div className="tab-scene screen screen--workout">
             {!isWorkoutActive ? (
-              <WorkoutMotion scrollContainer={contentScrollRef}>
+              <WorkoutMotion scrollContainer={contentScrollRef} active={isPageActive && !isAnyModalOpen}>
                 <div className="workout-home" style={styles.workoutHome}>
                   <div className="workout-bento">
                     <section className="workout-hero premium-card" style={styles.startPanel} aria-labelledby="workout-title">
@@ -2328,26 +2266,11 @@ export default function App() {
               {dailyLogs.length >= 2 && weightTrendData.length >= 2 && (
                 <div className="panel-card tdee-chart-card" style={styles.sectionCard}>
                   <h3 style={{margin: '0 0 15px 0', fontSize: '18px', color: THEME.textPrimary}}>Weight Trend Analysis</h3>
-                  <div ref={chartFrameRef} style={styles.chartFrame}>
-                    {shouldMountWeightChart && (
-                      <ResponsiveContainer
-                        width="100%"
-                        height="100%"
-                        minWidth={1}
-                        minHeight={CHART_HEIGHT}
-                        debounce={100}
-                        initialDimension={{ width: chartSize.width, height: CHART_HEIGHT }}
-                      >
-                        <LineChart data={weightTrendData} margin={{ top: 5, right: 5, bottom: 5, left: -20 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke={THEME.border} vertical={false} />
-                          <XAxis dataKey="date" stroke={THEME.textSecondary} fontSize={12} tickLine={false} />
-                          <YAxis stroke={THEME.textSecondary} fontSize={12} tickLine={false} domain={['dataMin - 1', 'dataMax + 1']} />
-                          <Tooltip contentStyle={{backgroundColor: THEME.bgDark, border: `1px solid ${THEME.border}`, borderRadius: '8px', color: THEME.textPrimary}} itemStyle={{color: THEME.textPrimary}} />
-                          <Legend wrapperStyle={{fontSize: '12px', paddingTop: '10px', color: THEME.textSecondary}} />
-                          <Line type="monotone" dataKey="Actual" stroke={THEME.accentGold} strokeWidth={2} strokeDasharray="5 5" dot={{r: 3, fill: THEME.accentGold}} name="Scale Weight" />
-                          <Line type="monotone" dataKey="Trend" stroke={THEME.primaryRed} strokeWidth={3} dot={false} activeDot={{r: 6, fill: THEME.primaryRed}} name="True Trend (EMA)" />
-                        </LineChart>
-                      </ResponsiveContainer>
+                  <div style={styles.chartFrame}>
+                    {isPageActive && (
+                      <Suspense fallback={<p role="status">Loading chart...</p>}>
+                        <WeightTrendChart data={weightTrendData} theme={THEME} height={CHART_HEIGHT} />
+                      </Suspense>
                     )}
                   </div>
                 </div>

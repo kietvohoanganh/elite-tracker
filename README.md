@@ -119,6 +119,24 @@ For interface testing without OCR, set:
 VITE_USE_MOCK_IMAGE_PARSER=true
 ```
 
+## Mobile performance
+
+- Workout timers stop ticking while the page is hidden and recalculate from the
+  original start timestamp on return. Workout drafts still save on every edit.
+- History and daily-log listeners run only while their screen needs them and the
+  app is visible. Returning to the app reconnects them for fresh data.
+- Charts and meal-analysis code load on demand. Charts use one resize observer
+  and no line animation; previous-set summaries are cached between set edits.
+- Phones use static decorative text and opaque navigation surfaces, with no GSAP
+  scroll effects. All CSS animations pause when the page is hidden.
+- Closing image import, replacing an image, or backgrounding the app cancels OCR
+  and releases its worker. A cancelled import can be retried with Parse Image.
+
+Run `npm test`, `npm run lint`, and `npm run build` to check changes. Lifecycle
+coverage includes background/resume timers, page restoration, and OCR cancellation
+while initializing or recognizing. Battery savings must be measured on a physical
+phone; bundle-size reductions are not battery-life measurements.
+
 ## Available Commands
 
 | Command | Purpose |

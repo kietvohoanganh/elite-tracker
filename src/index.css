@@ -1156,3 +1156,26 @@ label.mu-button {
 @keyframes skeletonSweep { to { transform: translateX(100%); } }
 @keyframes marquee { to { transform: translateX(-50%); } }
 @keyframes loadingPulse { 0%, 100% { opacity: 0.26; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-4px); } }
+
+/* Keep the phone's GPU idle when there is no interaction. */
+@media (hover: none), (pointer: coarse), (max-width: 899px) {
+  .workout-marquee div,
+  .auth-marquee div { animation: none; }
+
+  .app-header,
+  .bottom-nav,
+  .active-workout > div:first-child {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  .app-header,
+  .active-workout > div:first-child { background: #090b0d !important; }
+  .bottom-nav { background: #14171b; }
+}
+
+html[data-app-active="false"] *,
+html[data-app-active="false"] *::before,
+html[data-app-active="false"] *::after {
+  animation-play-state: paused !important;
+}

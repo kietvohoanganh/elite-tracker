@@ -81,12 +81,12 @@ const mockParsedTemplate = {
 };
 
 
-export const parseWorkoutTemplateImage = async (imageBase64, mimeType = 'image/jpeg') => {
+export const parseWorkoutTemplateImage = async (imageBase64, mimeType = 'image/jpeg', options = {}) => {
   if (!imageBase64) throw new Error('Please upload an image before parsing.');
   if (import.meta.env.DEV && import.meta.env.VITE_USE_MOCK_IMAGE_PARSER === 'true') {
     return mockParsedTemplate;
   }
-  const rawText = await recognizeWorkoutImage(imageBase64, mimeType);
+  const rawText = await recognizeWorkoutImage(imageBase64, mimeType, options);
   const parsed = parseWorkoutTextToParsedTemplate(rawText);
   if (!parsed.exercises.length) {
     throw new Error('Could not read exercises with sets and reps. Crop the image to the workout table and try a sharper image, or enter the template manually.');

@@ -131,3 +131,18 @@ export const getBestSetForExercise = (exerciseHistory = []) => {
     return bestSet;
   }, null);
 };
+
+
+export function getPreviousSetSummaries(workoutHistory = []) {
+  const summaries = Object.create(null);
+  for (const entry of workoutHistory) {
+    for (const [exercise, sets] of Object.entries(entry.data || {})) {
+      if (Object.hasOwn(summaries, exercise) || !Array.isArray(sets) || !sets.length) continue;
+      const bestSet = sets.reduce((best, set) => (
+        parseFloat(best.weight) > parseFloat(set.weight) ? best : set
+      ));
+      summaries[exercise] = `${bestSet.weight}kg x ${bestSet.reps}`;
+    }
+  }
+  return summaries;
+}

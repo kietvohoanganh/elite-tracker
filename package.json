@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "prepare:ocr": "node scripts/prepare-ocr.mjs",
     "predev": "npm run prepare:ocr",
-    "prebuild": "npm run prepare:ocr"
+    "prebuild": "npm run prepare:ocr",
+    "test": "node --test src/utils/*.test.mjs src/services/*.test.mjs"
   },
   "dependencies": {
     "@capacitor/camera": "^8.2.0",
