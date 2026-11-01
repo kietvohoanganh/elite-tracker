@@ -2110,7 +2110,6 @@ export default function App() {
                   <div className="workout-bento">
                     <section className="workout-hero premium-card" style={styles.startPanel} aria-labelledby="workout-title">
                       <div className="workout-hero__content">
-                        <p className="workout-hero__kicker">Today’s training</p>
                         <h1 id="workout-title">
                           Train with
                           <span className="workout-hero__inline-art" aria-hidden="true">
@@ -2130,7 +2129,6 @@ export default function App() {
                     <button type="button" className="workout-utility-card workout-utility-card--create" onClick={openCreateTemplateModal}>
                       <span className="workout-utility-card__icon"><FitnessIcon name="templates" size={24} /></span>
                       <span>
-                        <small>Build once</small>
                         <strong>Create a template</strong>
                       </span>
                       <FitnessIcon name="arrowRight" size={20} />
@@ -2139,7 +2137,6 @@ export default function App() {
                     <button type="button" className="workout-utility-card workout-utility-card--import" onClick={openImportTemplateModal}>
                       <span className="workout-utility-card__icon"><FitnessIcon name="importImage" size={24} /></span>
                       <span>
-                        <small>Already have a plan?</small>
                         <strong>Import from image</strong>
                       </span>
                       <FitnessIcon name="arrowRight" size={20} />
@@ -2149,7 +2146,6 @@ export default function App() {
                 <section className="template-section" style={styles.templateSection} aria-labelledby="templates-title">
 	                  <div style={styles.templateSectionHeader}>
 	                    <div>
-	                      <p className="section-kicker">Repeatable sessions</p>
 	                      <h2 id="templates-title" style={styles.templateSectionTitle}>Your templates</h2>
 	                    </div>
 	                    <button className="mu-button mu-secondary-btn compact-icon-action" onClick={openCreateTemplateModal} style={styles.createTemplateBtn}>
@@ -2166,9 +2162,7 @@ export default function App() {
                       icon="templates"
                       title="No templates yet"
                       action={<button type="button" className="mu-button mu-secondary-btn" onClick={openCreateTemplateModal}>Create your first template</button>}
-                    >
-                      Save a repeatable session so your next workout starts in one tap.
-                    </EmptyState>
+                    />
                   ) : (
                     <div className="template-accordion" style={styles.templateCardList}>
                       {workoutTemplates.map(template => (
@@ -2245,7 +2239,7 @@ export default function App() {
         {/* HISTORY TAB */}
         {visibleTab === 'history' && (
           <div className="tab-scene screen screen--history" style={{padding: '20px'}}>
-            <PageHeader title="Training history" description="Review completed sessions and the work behind your progress." />
+            <PageHeader title="Training history" />
             
             <div className="week-switcher" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
               <button className="mu-text-button" onClick={() => { setWeekOffset(w => w - 1); setSelectedDate(null); }} style={styles.navArrow}><FitnessIcon name="arrowLeft" size={17} /> Past</button>
@@ -2319,14 +2313,14 @@ export default function App() {
         {/* METABOLISM & TREND TAB */}
         {visibleTab === 'tdee' && (
           <div className="tab-scene screen screen--tdee" style={{padding: '20px', minWidth: 0}}>
-            <PageHeader title="Metabolism" description="Use daily weight and intake data to estimate your real energy needs." />
+            <PageHeader title="Metabolism" />
             <div className={`tdee-overview${dailyLogs.length >= 2 && weightTrendData.length >= 2 ? ' tdee-overview--with-chart' : ''}`}>
               <div className="panel-card tdee-summary-card" style={styles.dashboardCard}>
                 <p style={{color: THEME.textSecondary, margin: '0 0 10px 0'}}>Actual TDEE (Dynamic):</p>
                 <p style={{fontSize: '36px', fontWeight: '900', color: THEME.accentGold, margin: 0, letterSpacing: '0'}}>
                   {dynamicTDEE ? `${dynamicTDEE} kcal` : "Collecting data..."}
                 </p>
-                {!dynamicTDEE && <p style={{fontSize: '12px', color: THEME.textSecondary, marginTop: '10px'}}>A minimum of 7 days logged is required for accurate algorithm calibration.</p>}
+                {!dynamicTDEE && <p style={{fontSize: '12px', color: THEME.textSecondary, marginTop: '10px'}}>Log 7+ days to calculate TDEE.</p>}
               </div>
 
               {dailyLogs.length >= 2 && weightTrendData.length >= 2 && (
@@ -2354,7 +2348,6 @@ export default function App() {
                       </ResponsiveContainer>
                     )}
                   </div>
-                  <p style={{fontSize: '11px', color: THEME.textSecondary, textAlign: 'center', marginTop: '10px'}}>The red line represents your true weight trend, filtering out water retention and noise.</p>
                 </div>
               )}
             </div>
@@ -2416,7 +2409,7 @@ export default function App() {
         {/* AI NUTRITION TAB */}
         {visibleTab === 'food' && (
           <div className="tab-scene screen screen--nutrition" style={{padding: '20px'}}>
-            <PageHeader title="Nutrition" description="Capture a meal, review the estimate, and save only what looks right." />
+            <PageHeader title="Nutrition" />
 
             <div className="panel-card" style={styles.aiMealCard}>
               <div>
@@ -2679,7 +2672,7 @@ export default function App() {
         {/* PROFILE / COACHING TAB */}
         {visibleTab === 'you' && (
           <div className="tab-scene screen screen--profile" style={{padding: '20px', textAlign: 'center'}}>
-            <PageHeader title="Coaching profile" description="Set the basics once, then adjust your targets as your body and goals change." />
+            <PageHeader title="Coaching profile" />
             <div className="panel-card" style={{...styles.sectionCard, textAlign: 'left'}}>
               
               <div style={{display: 'flex', gap: '10px', marginBottom: '10px'}}>

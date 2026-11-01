@@ -435,8 +435,6 @@ select {
   line-height: 1.55;
 }
 
-.section-kicker,
-.workout-hero__kicker,
 .auth-kicker {
   margin: 0 0 9px;
   color: var(--lime);
