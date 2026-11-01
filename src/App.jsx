@@ -30,6 +30,7 @@ import {
   detectNewExercises,
   findExerciseLibraryMatch,
   mapParsedExerciseToTemplateExercise,
+  normalizeExerciseName,
 } from './utils/exerciseParsing';
 import { analyzeMealDescription, analyzeMealImage } from './services/mealAnalyzer';
 import { parseWorkoutTemplateImage } from './services/templateImageParser';
@@ -1474,12 +1475,13 @@ export default function App() {
     isNewExercise: false,
   });
 
-  const refreshImportedExerciseLibraryStatus = (exercise) => {
+  const refreshImportedExerciseLibraryStatus = (exercise, normalizeName = false) => {
     const libraryMatch = findExerciseLibraryMatch(exercise.exerciseName, exercise.muscleGroup, allExerciseLibrary);
 
     return {
       ...exercise,
       _uid: exercise._uid || generateTempId(),
+      exerciseName: normalizeName ? normalizeExerciseName(libraryMatch?.exerciseName || exercise.exerciseName) : exercise.exerciseName,
       exerciseId: libraryMatch?.exerciseId || createImportedExerciseId(exercise.muscleGroup, exercise.exerciseName),
       isNewExercise: !libraryMatch,
     };
@@ -1631,7 +1633,7 @@ export default function App() {
       return;
     }
 
-    const reviewedExercises = importedTemplateExercises.map(refreshImportedExerciseLibraryStatus);
+    const reviewedExercises = importedTemplateExercises.map(exercise => refreshImportedExerciseLibraryStatus(exercise, true));
     if (!reviewedExercises.every(isValidImportedExercise)) {
       setImportTemplateError('Review each exercise. Name, muscle group, and sets are required.');
       return;

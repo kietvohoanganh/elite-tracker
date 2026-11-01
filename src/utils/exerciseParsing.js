@@ -52,7 +52,8 @@ export const parseSetsAndReps = (text = '') => {
 
 export const normalizeExerciseName = (name = '') => (
   String(name)
-    .replace(/^[\s#*-]*(?:\d+(?:[.)-]\s*|\s+))?/, '')
+    .normalize('NFKC')
+    .replace(/^[\s#*•○◦▪●-]*(?:(?:\(\d+\)|\d+\s*[.):–—-])\s*|\d+\s+)?/, '')
     .replace(/\([^)]*\)/g, ' ')
     .replace(/\s*[:：]\s*\d+.*$/i, '')
     .replace(/\s+\d+\s*(?:sets?|set|hiep|hiệp)\b.*$/i, '')
@@ -65,7 +66,7 @@ export const findExerciseLibraryMatch = (exerciseName = '', muscleGroup = '', ex
   if (!normalizedName) return null;
 
   const matches = exerciseLibrary.filter(exercise => (
-    normalizeSearchText(exercise.exerciseName) === normalizedName
+    normalizeSearchText(normalizeExerciseName(exercise.exerciseName)) === normalizedName
   ));
 
   if (matches.length === 0) return null;
@@ -97,7 +98,7 @@ export const mapParsedExerciseToTemplateExercise = (parsedExercise = {}, exercis
 
   return {
     exerciseId: libraryMatch?.exerciseId || `import-${slugify(`${muscleGroup}-${exerciseName}`)}`,
-    exerciseName: libraryMatch?.exerciseName || exerciseName,
+    exerciseName: normalizeExerciseName(libraryMatch?.exerciseName || exerciseName),
     muscleGroup: libraryMatch?.muscleGroup || muscleGroup,
     sets: convertParsedExerciseToTemplateSets(parsedExercise),
     notes: String(parsedExercise.notes ?? '').trim(),
@@ -114,13 +115,13 @@ export const detectNewExercises = (parsedExercises = [], exerciseLibrary = []) =
 
 const cleanOcrLine = (line = '') => (
   String(line)
-    .replace(/^[\s•*-]*(?:o|0|○|◦|▪|●)?\s*/i, '')
+    .replace(/^[\s•*○◦▪●-]+/, '')
     .replace(/\s+/g, ' ')
     .trim()
 );
 
 const getExerciseNameFromLine = (line = '') => {
-  const withoutBullet = cleanOcrLine(line);
+  const withoutBullet = normalizeExerciseName(cleanOcrLine(line));
   const beforePrescription = withoutBullet.replace(/\s+\d{1,2}\s*[x×]\s*(?:\d|max).*$/i, '');
   const beforeParenthesis = beforePrescription.split('(')[0];
   const beforeColon = beforeParenthesis.split(':')[0];

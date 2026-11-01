@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseWorkoutTextToParsedTemplate } from './exerciseParsing.js';
+import { parseWorkoutTextToParsedTemplate, mapParsedExerciseToTemplateExercise, detectNewExercises, normalizeExerciseName } from './exerciseParsing.js';
 
 test('screenshot table keeps exercise names, ranges and rest separate', () => {
   const result = parseWorkoutTextToParsedTemplate(`
@@ -44,4 +44,30 @@ test('existing prose format and headings still parse', () => {
 
 test('unrelated text does not invent exercises', () => {
   assert.equal(parseWorkoutTextToParsedTemplate('No workout here.').exercises.length, 0);
+});
+
+
+test('numbered OCR names reuse existing library exercises', () => {
+  const library = [{ exerciseId: 'press', exerciseName: 'Overhead Press', muscleGroup: 'Shoulders' }];
+  for (const prefix of ['1. ', '1 . ', '1) ', '(1) ', '1: ', '1- ', '１． ', '• 1. ', '1 ']) {
+    const parsed = { exerciseName: `${prefix}Overhead Press`, sets: '3', reps: '8-12' };
+    const mapped = mapParsedExerciseToTemplateExercise(parsed, library);
+    assert.equal(mapped.exerciseId, 'press', prefix);
+    assert.equal(mapped.exerciseName, 'Overhead Press', prefix);
+    assert.equal(mapped.isNewExercise, false, prefix);
+    assert.equal(detectNewExercises([parsed], library).length, 0, prefix);
+    const result = parseWorkoutTextToParsedTemplate(`${prefix}Overhead Press 3 x 8-12`);
+    assert.equal(result.exercises[0].exerciseName, 'Overhead Press', prefix);
+  }
+});
+
+test('legacy numbered library names match without creating duplicates', () => {
+  const mapped = mapParsedExerciseToTemplateExercise({ exerciseName: 'Bench Press' }, [
+    { exerciseId: 'existing', exerciseName: '1. Bench Press', muscleGroup: 'Chest' },
+  ]);
+  assert.equal(mapped.exerciseId, 'existing');
+  assert.equal(mapped.exerciseName, 'Bench Press');
+  assert.equal(mapped.isNewExercise, false);
+  assert.equal(normalizeExerciseName('3D Cable Raise'), '3D Cable Raise');
+  assert.equal(detectNewExercises([{ exerciseName: '1 . New Movement' }], []).length, 1);
 });
