@@ -52,7 +52,7 @@ export const parseSetsAndReps = (text = '') => {
 
 export const normalizeExerciseName = (name = '') => (
   String(name)
-    .replace(/^[\s#*-]*(?:\d+[.)-]\s*)?/, '')
+    .replace(/^[\s#*-]*(?:\d+(?:[.)-]\s*|\s+))?/, '')
     .replace(/\([^)]*\)/g, ' ')
     .replace(/\s*[:：]\s*\d+.*$/i, '')
     .replace(/\s+\d+\s*(?:sets?|set|hiep|hiệp)\b.*$/i, '')
@@ -121,7 +121,8 @@ const cleanOcrLine = (line = '') => (
 
 const getExerciseNameFromLine = (line = '') => {
   const withoutBullet = cleanOcrLine(line);
-  const beforeParenthesis = withoutBullet.split('(')[0];
+  const beforePrescription = withoutBullet.replace(/\s+\d{1,2}\s*[x×]\s*(?:\d|max).*$/i, '');
+  const beforeParenthesis = beforePrescription.split('(')[0];
   const beforeColon = beforeParenthesis.split(':')[0];
   const withoutMalformedMuscleLabel = beforeColon
     .replace(/\s+[il1]?(?:vai|nguc|ngyc|ngllc|nglfc|dui|bung|lung|mong)\b.*$/i, '');
@@ -148,7 +149,7 @@ export const parseWorkoutTextToParsedTemplate = (rawText = '') => {
   const exerciseLines = exerciseLineEntries.map(entry => entry.line);
 
   const firstExerciseIndex = exerciseLineEntries[0]?.index ?? lines.length;
-  const ignoredHeadingPattern = /^(upload image|parse image|png,|screenshot |image parser service)/i;
+  const ignoredHeadingPattern = /^(upload image|parse image|png,|screenshot |image parser service|#?\s*(?:bài tập|exercise|sets?\s*[x×]))/i;
   const headingCandidates = lines
     .slice(0, firstExerciseIndex)
     .filter(line => !ignoredHeadingPattern.test(line))
@@ -156,16 +157,16 @@ export const parseWorkoutTextToParsedTemplate = (rawText = '') => {
 
   const templateName = (
     headingCandidates[headingCandidates.length - 1] ||
-    lines.find(line => !exerciseLines.includes(line) && !parseSetsAndReps(line).sets && !ignoredHeadingPattern.test(line)) ||
-    lines[0] ||
     'Imported Workout Template'
   ).replace(/^[#\s]+/, '').trim();
 
   const exercises = exerciseLines.map(line => {
     const parsed = parseSetsAndReps(line);
     const notes = getParentheticalNotes(line);
+    const rest = line.match(/\b(\d+)\s*(s|sec|seconds?|giây)\s*$/i);
+    if (rest) notes.push(`Rest: ${rest[1]}s`);
     const muscleLabel = notes.find(note => normalizeMuscleGroup(note) !== 'Other') || '';
-    const muscleGroup = normalizeMuscleGroup(muscleLabel || notes.join(' ') || line);
+    const muscleGroup = normalizeMuscleGroup(muscleLabel || line);
 
     return {
       exerciseName: getExerciseNameFromLine(line),

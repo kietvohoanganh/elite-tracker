@@ -1,4 +1,4 @@
-import { memo, useCallback, useState, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { initializeApp } from "firebase/app";
 import {
   browserLocalPersistence,
@@ -33,6 +33,7 @@ import {
 } from './utils/exerciseParsing';
 import { analyzeMealDescription, analyzeMealImage } from './services/mealAnalyzer';
 import { parseWorkoutTemplateImage } from './services/templateImageParser';
+import { readWorkoutDraft, saveWorkoutDraft } from './utils/workoutDraft';
 
 // 1. YOUR FIREBASE CONFIGURATION
 const firebaseConfig = {
@@ -350,6 +351,22 @@ export default function App() {
   const [currentTemplateName, setCurrentTemplateName] = useState('');
   const workoutStartedAtRef = useRef(null);
   const [workoutStartedAt, setWorkoutStartedAt] = useState(null);
+  const workoutOwnerRef = useRef(null);
+  const draftSaveWarningRef = useRef(false);
+
+  // Persist each committed edit before paint; background unload events are not
+  // reliable when the OS terminates a suspended WebView.
+  useLayoutEffect(() => {
+    if (!user || workoutOwnerRef.current !== user.uid) return;
+    const saved = saveWorkoutDraft(user.uid, isWorkoutActive ? {
+      activeWorkout, workoutStartedAt, currentTemplateId, currentTemplateName,
+    } : null);
+    if (!saved && !draftSaveWarningRef.current) {
+      draftSaveWarningRef.current = true;
+      alert('Could not save your workout on this device. Keep the app open until you finish and save this session.');
+    }
+    if (saved) draftSaveWarningRef.current = false;
+  }, [user, isWorkoutActive, activeWorkout, workoutStartedAt, currentTemplateId, currentTemplateName]);
   
   // COACHING MODULE STATES
   const [profileAge, setProfileAge] = useState(20);
@@ -646,6 +663,18 @@ export default function App() {
 
     const finishAuthLoading = (currentUser = null) => {
       if (!isActive) return;
+      const nextOwner = currentUser?.uid || null;
+      if (workoutOwnerRef.current !== nextOwner) {
+        const draft = readWorkoutDraft(nextOwner);
+        workoutOwnerRef.current = nextOwner;
+        workoutStartedAtRef.current = draft?.workoutStartedAt || null;
+        setWorkoutStartedAt(draft?.workoutStartedAt || null);
+        setActiveWorkout(draft?.activeWorkout || {});
+        setIsWorkoutActive(Boolean(draft));
+        setCurrentTemplateId(typeof draft?.currentTemplateId === 'string' ? draft.currentTemplateId : null);
+        setCurrentTemplateName(typeof draft?.currentTemplateName === 'string' ? draft.currentTemplateName : '');
+        if (draft) setActiveTab('workout');
+      }
       setAuthStartupSlow(false);
       setUser(currentUser);
       setAuthLoading(false);
@@ -3060,7 +3089,7 @@ export default function App() {
 	                </div>
 	              )}
 	              {isParsingTemplateImage && (
-	                <div style={styles.importLoadingState}>Analyzing image...</div>
+	                <div style={styles.importLoadingState}>Reading text on your device. Large images may take a moment...</div>
 	              )}
 	              {importTemplateError && (
 	                <p style={styles.formError}>{importTemplateError}</p>

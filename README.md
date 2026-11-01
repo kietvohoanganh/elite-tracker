@@ -103,9 +103,15 @@ medical or dietary advice.
 
 ## Workout Image Import
 
-During local macOS development, workout-template screenshots can be parsed
-through the Vite middleware and the Vision OCR script in
-`scripts/ocr-workout-image.swift`.
+Workout screenshots are read on the device using Tesseract.js (English and
+Vietnamese), with no Firebase AI or Vertex AI authorization required. The worker,
+WASM runtime and language data are bundled by `npm run prepare:ocr`, automatically
+run before development and production builds. This also includes the assets in
+Capacitor builds; run `npm run build` before `npx cap sync ios`.
+
+Review detected exercise names, sets and reps before saving. OCR can misread small
+or blurry text; crop images to the workout table for best results. The local Swift
+OCR endpoint remains available as a development utility.
 
 For interface testing without OCR, set:
 

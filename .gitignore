@@ -37,3 +37,6 @@ google-services.json
 *.njsproj
 *.sln
 *.sw?
+
+# Generated OCR assets, recreated by predev/prebuild
+public/ocr/
